@@ -4,10 +4,14 @@ project(mcp-server-zypp VERSION 0.1.0 LANGUAGES CXX)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(GNUInstallDirs)
 
-find_package(Go REQUIRED)
-
-# ─── C++ worker (zypp-mcp-tool) ────────────────────────────────────────────────
+# ─── C++ worker (zypp-mcp-tool) ───────────────────────────────────────────────
 add_subdirectory(worker)
 
 # ─── Go proxy (mcp-server-zypp) ───────────────────────────────────────────────
-add_subdirectory(proxy)
+# Set BUILD_GO_PROXY=OFF to skip the Go build — useful when the proxy binary
+# is built separately (e.g. via 'go build -mod=vendor' in an OBS spec file).
+option(BUILD_GO_PROXY "Build the Go proxy binary via cmake" ON)
+if(BUILD_GO_PROXY)
+  find_package(Go REQUIRED)
+  add_subdirectory(proxy)
+endif()
