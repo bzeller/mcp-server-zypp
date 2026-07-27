@@ -1,0 +1,15 @@
+=Ver: 3.0
+=Pkg: patch:security-update 1 1 noarch
+=Tim: 1700000000
+=Cat: security
+=Sev: important
++Prv:
+patch:security-update = 1-1
+-Prv:
++Req:
+pkg-base = 2-1
+-Req:
+=Pkg: pkg-base 2 1 x86_64
++Prv:
+pkg-base = 2-1
+-Prv:

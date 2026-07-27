@@ -1,0 +1,13 @@
+=Ver: 3.0
+=Pkg: product:test-product 1 1 x86_64
++Prv:
+product:test-product = 1-1
+-Prv:
+=Vnd: mcp-test
+=Pkg: test-release 1 1 x86_64
++Prv:
+product()
+product(test-product) = 1-1
+test-release = 1-1
+-Prv:
+=Vnd: mcp-test

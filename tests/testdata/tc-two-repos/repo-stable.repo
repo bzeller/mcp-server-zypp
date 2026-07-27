@@ -1,0 +1,6 @@
+=Ver: 3.0
+=Pkg: versioned-pkg 1 0 x86_64
++Prv:
+versioned-pkg = 1-0
+-Prv:
+=Vnd: mcp-test

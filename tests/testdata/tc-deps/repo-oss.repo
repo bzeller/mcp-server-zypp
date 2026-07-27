@@ -1,0 +1,16 @@
+=Ver: 3.0
+=Pkg: pkg-with-dep 1 1 x86_64
++Req:
+pkg-dep
+-Req:
++Prv:
+pkg-with-dep = 1-1
+-Prv:
+=Pkg: pkg-dep 1 1 x86_64
++Prv:
+pkg-dep = 1-1
+-Prv:
+=Pkg: pkg-dep-of-dep 1 1 x86_64
++Prv:
+pkg-dep-of-dep = 1-1
+-Prv:

@@ -1,0 +1,8 @@
+=Ver: 3.0
+=Pkg: pkg-unsolvable 1 1 x86_64
++Req:
+pkg-missing-dep
+-Req:
++Prv:
+pkg-unsolvable = 1-1
+-Prv:

@@ -1,0 +1,8 @@
+=Ver: 3.0
+=Pkg: pkg-b 1 1 x86_64
++Con:
+pkg-a
+-Con:
++Prv:
+pkg-b = 1-1
+-Prv:

@@ -1,0 +1,22 @@
+=Ver: 3.0
+=Pkg: pkg-available 1 1 x86_64
++Prv:
+pkg-available = 1-1
+some-capability = 1-1
+-Prv:
+=Pkg: pkg-another 2 1 x86_64
++Prv:
+pkg-another = 2-1
+-Prv:
+=Pkg: pkg-installed 1 1 x86_64
++Prv:
+pkg-installed = 1-1
+-Prv:
+=Pkg: pkg-auto-installed 1 1 x86_64
++Prv:
+pkg-auto-installed = 1-1
+-Prv:
+=Pkg: pkg-other-version 1 0 x86_64
++Prv:
+pkg-other-version = 1-0
+-Prv:
