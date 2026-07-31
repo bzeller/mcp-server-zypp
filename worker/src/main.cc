@@ -42,19 +42,23 @@ namespace
     }
 
     // ─── Single registry instance ─────────────────────────────────────────────
-    const std::array<ToolDescriptor, 6> kRegistry = { {
+    const std::array<ToolDescriptor, 8> kRegistry = { {
         { "search_packages",  "Search for packages matching a pattern in name, description or dependency attributes.",
-          &schema_search_packages(),  tool_search_packages  },
+          &schema_search_packages(),  false, tool_search_packages  },
         { "find_providers",   "Find packages that provide a given capability.",
-          &schema_find_providers(),   tool_find_providers   },
+          &schema_find_providers(),   false, tool_find_providers   },
         { "find_dependents",  "Find packages that require, recommend, conflict with or obsolete a given package.",
-          &schema_find_dependents(),  tool_find_dependents  },
+          &schema_find_dependents(),  false, tool_find_dependents  },
         { "check_updates",    "List pending security patches (or all patches with applicable_only=false).",
-          &schema_updates(),          tool_updates          },
-        { "install_package",  "Plan installation of a package. Returns the dependency plan for human approval. Does NOT commit without confirmation.",
-          &schema_install(),          tool_install          },
-        { "remove_package",   "Plan removal of a package. Returns the list of packages that would be removed for human approval. Does NOT commit without confirmation.",
-          &schema_remove(),           tool_remove           },
+          &schema_updates(),          false, tool_updates          },
+        { "plan_install",     "Plan installation of a package. Returns the dependency plan for human approval before confirmation.",
+          &schema_plan_install(),     false, tool_plan_install     },
+        { "plan_remove",      "Plan removal of a package. Returns the list of packages that would be removed for human approval before confirmation.",
+          &schema_plan_remove(),      false, tool_plan_remove      },
+        { "confirm_install",  "Execute a previously planned installation. Requires root. Re-solves and commits the transaction.",
+          &schema_confirm_install(),  true,  tool_confirm_install  },
+        { "confirm_remove",   "Execute a previously planned removal. Requires root. Re-solves and commits the transaction.",
+          &schema_confirm_remove(),   true,  tool_confirm_remove   },
     } };
 
     // ─── JSON helpers ─────────────────────────────────────────────────────────
@@ -76,9 +80,10 @@ namespace
         for ( const auto & td : kRegistry )
         {
             tools.add( zypp::json::Object{ {
-                { "name",         std::string(td.name)        },
-                { "description",  std::string(td.description) },
-                { "input_schema", *td.inputSchema             }
+                { "name",          std::string(td.name)        },
+                { "description",   std::string(td.description) },
+                { "input_schema",  *td.inputSchema             },
+                { "requires_root", td.requiresRoot             }
             } } );
         }
         const std::string out = tools.asJSON();

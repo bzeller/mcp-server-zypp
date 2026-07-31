@@ -36,6 +36,7 @@ set(WORKER_HEADERS
   src/tools/registry.h
   src/tools/tools.h
   src/tools/validate.h
+  src/tools/transaction.h
 )
 
 
@@ -44,12 +45,15 @@ set(WORKER_SOURCES
   src/transport.cc
   src/callbacks.cc
   src/system.cc
+  src/tools/transaction.cc
   src/tools/search_packages.cc
   src/tools/find_providers.cc
   src/tools/find_dependents.cc
   src/tools/updates.cc
-  src/tools/install.cc
-  src/tools/remove.cc
+  src/tools/plan_install.cc
+  src/tools/plan_remove.cc
+  src/tools/confirm_install.cc
+  src/tools/confirm_remove.cc
 )
 
 add_executable(zypp-mcp-tool ${WORKER_HEADERS} ${WORKER_SOURCES})

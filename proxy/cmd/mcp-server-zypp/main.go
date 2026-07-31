@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"syscall"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -19,9 +20,20 @@ func main() {
 	var (
 		transport = flag.String("transport", "stdio", "Transport mode: stdio or http")
 		addr      = flag.String("addr", ":8080", "HTTP listen address (only used with -transport=http)")
-		worker    = flag.String("worker", config.DefaultWorkerPath, "Path to the zypp-mcp-tool binary")
+		workerDir = flag.String("worker-dir", config.DefaultWorkerDir, "Directory containing zypp-mcp-* worker binaries")
 	)
 	flag.Parse()
+
+	// Fallback: if no worker dir was injected at build time or passed on the
+	// command line, use the directory of the running executable.
+	if *workerDir == "" {
+		exe, err := os.Executable()
+		if err != nil {
+			slog.Error("cannot determine executable path", "err", err)
+			os.Exit(1)
+		}
+		*workerDir = filepath.Dir(exe)
+	}
 
 	slog.SetDefault(slog.New(slog.NewJSONHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
@@ -30,9 +42,7 @@ func main() {
 		Version: "0.1.0",
 	}, nil)
 
-	// Discover tools from the worker binary and register them.
-	// Fail fast — the proxy is useless without a working worker.
-	if err := tools.Register(server, *worker); err != nil {
+	if err := tools.Register(server, *workerDir); err != nil {
 		slog.Error("tool discovery failed", "err", err)
 		os.Exit(1)
 	}

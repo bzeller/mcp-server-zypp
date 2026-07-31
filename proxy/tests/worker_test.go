@@ -162,9 +162,39 @@ func TestListTools_ReturnsAllTools(t *testing.T) {
 	for _, d := range descs {
 		names[d.Name] = true
 	}
-	for _, expected := range []string{"search_packages", "find_providers", "find_dependents", "check_updates", "install_package", "remove_package"} {
+	for _, expected := range []string{
+		"search_packages", "find_providers", "find_dependents", "check_updates",
+		"plan_install", "plan_remove", "confirm_install", "confirm_remove",
+	} {
 		if !names[expected] {
 			t.Errorf("tool %q not in --list-tools output", expected)
+		}
+	}
+}
+
+func TestListTools_RequiresRootFlags(t *testing.T) {
+	descs, err := worker.ListTools(context.Background(), workerBinary(t))
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	byName := make(map[string]worker.ToolDescriptor)
+	for _, d := range descs {
+		byName[d.Name] = d
+	}
+
+	// These tools only read the pool — no root required.
+	noRoot := []string{"search_packages", "find_providers", "find_dependents", "check_updates", "plan_install", "plan_remove"}
+	for _, name := range noRoot {
+		if d, ok := byName[name]; ok && d.RequiresRoot {
+			t.Errorf("tool %q should not require root", name)
+		}
+	}
+
+	// These tools commit to the RPM DB — root required.
+	rootOnly := []string{"confirm_install", "confirm_remove"}
+	for _, name := range rootOnly {
+		if d, ok := byName[name]; ok && !d.RequiresRoot {
+			t.Errorf("tool %q should require root", name)
 		}
 	}
 }
@@ -174,6 +204,9 @@ func TestListTools_SchemasHaveTestcaseField(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTools: %v", err)
 	}
+	// Only plan_* tools support testcase — confirm_* always runs on the live
+	// system and read-only tools already have testcase in their own schemas.
+	// Verify plan_* have it and confirm_* do not.
 	for _, d := range descs {
 		var schema map[string]any
 		if err := json.Unmarshal(d.InputSchema, &schema); err != nil {
@@ -185,8 +218,17 @@ func TestListTools_SchemasHaveTestcaseField(t *testing.T) {
 			t.Errorf("tool %q: schema has no properties", d.Name)
 			continue
 		}
-		if _, ok := props["testcase"]; !ok {
-			t.Errorf("tool %q: schema missing 'testcase' property", d.Name)
+		_, hasTestcase := props["testcase"]
+		switch d.Name {
+		case "plan_install", "plan_remove",
+			"search_packages", "find_providers", "find_dependents", "check_updates":
+			if !hasTestcase {
+				t.Errorf("tool %q: schema missing 'testcase' property", d.Name)
+			}
+		case "confirm_install", "confirm_remove":
+			if hasTestcase {
+				t.Errorf("tool %q: confirm tools must not expose 'testcase' — always live system", d.Name)
+			}
 		}
 	}
 }
@@ -294,11 +336,11 @@ func TestCheckUpdates_ApplicableOnlyDefault(t *testing.T) {
 	}
 }
 
-// ─── install_package ──────────────────────────────────────────────────────────
+// ─── plan_install ──────────────────────────────────────────────────────────
 
 func TestInstall_PlanContainsRequestedPackage(t *testing.T) {
 	tc := testcase(t, "tc-simple")
-	result := invokeSimple(t, "install_package",
+	result := invokeSimple(t, "plan_install",
 		arg(map[string]string{"package": "pkg-available", "testcase": tc}))
 
 	toInstall := planInstall(t, result)
@@ -309,7 +351,7 @@ func TestInstall_PlanContainsRequestedPackage(t *testing.T) {
 
 func TestInstall_PlanIncludesDependencies(t *testing.T) {
 	tc := testcase(t, "tc-deps")
-	result := invokeSimple(t, "install_package",
+	result := invokeSimple(t, "plan_install",
 		arg(map[string]string{"package": "pkg-with-dep", "testcase": tc}))
 
 	toInstall := planInstall(t, result)
@@ -324,7 +366,7 @@ func TestInstall_PlanIncludesDependencies(t *testing.T) {
 func TestInstall_ConflictReturnsSolverError(t *testing.T) {
 	// pkg-a is installed, pkg-b conflicts with pkg-a
 	tc := testcase(t, "tc-conflict")
-	m := invokeExpectError(t, "install_package",
+	m := invokeExpectError(t, "plan_install",
 		arg(map[string]string{"package": "pkg-b", "testcase": tc}),
 		"SOLVER_ERROR")
 
@@ -336,14 +378,14 @@ func TestInstall_ConflictReturnsSolverError(t *testing.T) {
 
 func TestInstall_MissingDependencyReturnsSolverError(t *testing.T) {
 	tc := testcase(t, "tc-no-solution")
-	invokeExpectError(t, "install_package",
+	invokeExpectError(t, "plan_install",
 		arg(map[string]string{"package": "pkg-unsolvable", "testcase": tc}),
 		"SOLVER_ERROR")
 }
 
 func TestInstall_AlreadyInstalledProducesEmptyPlan(t *testing.T) {
 	tc := testcase(t, "tc-simple")
-	result := invokeSimple(t, "install_package",
+	result := invokeSimple(t, "plan_install",
 		arg(map[string]string{"package": "pkg-installed", "testcase": tc}))
 
 	toInstall := planInstall(t, result)
@@ -352,11 +394,11 @@ func TestInstall_AlreadyInstalledProducesEmptyPlan(t *testing.T) {
 	}
 }
 
-// ─── remove_package ───────────────────────────────────────────────────────────
+// ─── plan_remove ───────────────────────────────────────────────────────────
 
 func TestRemove_PlanContainsRequestedPackage(t *testing.T) {
 	tc := testcase(t, "tc-simple")
-	result := invokeSimple(t, "remove_package",
+	result := invokeSimple(t, "plan_remove",
 		arg(map[string]string{"package": "pkg-installed", "testcase": tc}))
 
 	toRemove := planRemove(t, result)
@@ -367,7 +409,7 @@ func TestRemove_PlanContainsRequestedPackage(t *testing.T) {
 
 func TestRemove_NotInstalledProducesEmptyPlan(t *testing.T) {
 	tc := testcase(t, "tc-simple")
-	result := invokeSimple(t, "remove_package",
+	result := invokeSimple(t, "plan_remove",
 		arg(map[string]string{"package": "pkg-available", "testcase": tc}))
 
 	toRemove := planRemove(t, result)
@@ -442,7 +484,7 @@ func TestFrames_ResultIsLastFrame(t *testing.T) {
 	}
 }
 
-// ─── install_package: new argument tests ──────────────────────────────────────
+// ─── plan_install: new argument tests ──────────────────────────────────────
 
 func TestInstall_RepoRestriction_InstallsLesserVersion(t *testing.T) {
 	// repo-stable has versioned-pkg 1-0, repo-bleeding has 2-0.
@@ -451,7 +493,7 @@ func TestInstall_RepoRestriction_InstallsLesserVersion(t *testing.T) {
 	tc := testcase(t, "tc-two-repos")
 
 	// Without repo: expect version 2-0 (solver prefers higher)
-	result := invokeSimple(t, "install_package",
+	result := invokeSimple(t, "plan_install",
 		arg(map[string]string{"package": "versioned-pkg", "testcase": tc}))
 	toInstall := planInstall(t, result)
 	p := findPackage(toInstall, "versioned-pkg")
@@ -463,7 +505,7 @@ func TestInstall_RepoRestriction_InstallsLesserVersion(t *testing.T) {
 	}
 
 	// With repo-stable: must install 1-0 despite 2-0 being available elsewhere
-	result = invokeSimple(t, "install_package",
+	result = invokeSimple(t, "plan_install",
 		arg(map[string]string{"package": "versioned-pkg", "repo": "repo-stable", "testcase": tc}))
 	toInstall = planInstall(t, result)
 	p = findPackage(toInstall, "versioned-pkg")
@@ -478,7 +520,7 @@ func TestInstall_RepoRestriction_InstallsLesserVersion(t *testing.T) {
 func TestInstall_RepoRestriction_NotFoundInRepo(t *testing.T) {
 	// versioned-pkg does not exist in a nonexistent repo.
 	tc := testcase(t, "tc-two-repos")
-	invokeExpectError(t, "install_package",
+	invokeExpectError(t, "plan_install",
 		arg(map[string]string{"package": "versioned-pkg", "repo": "repo-nonexistent", "testcase": tc}),
 		"NOT_FOUND")
 }
@@ -487,7 +529,7 @@ func TestInstall_CapabilityFalse_NameBased(t *testing.T) {
 	// capability=false: find by exact name — should succeed the same as default
 	// but use name-based pool lookup path.
 	tc := testcase(t, "tc-simple")
-	result := invokeSimple(t, "install_package",
+	result := invokeSimple(t, "plan_install",
 		argAny(map[string]any{"package": "pkg-available", "capability": false, "testcase": tc}))
 	toInstall := planInstall(t, result)
 	if findPackage(toInstall, "pkg-available") == nil {
@@ -495,12 +537,12 @@ func TestInstall_CapabilityFalse_NameBased(t *testing.T) {
 	}
 }
 
-// ─── remove_package: new argument tests ──────────────────────────────────────
+// ─── plan_remove: new argument tests ──────────────────────────────────────
 
 func TestRemove_CapabilityTrue_ConflictBased(t *testing.T) {
 	// capability=true: uses addConflict path.
 	tc := testcase(t, "tc-simple")
-	result := invokeSimple(t, "remove_package",
+	result := invokeSimple(t, "plan_remove",
 		argAny(map[string]any{"package": "pkg-installed", "capability": true, "testcase": tc}))
 	toRemove := planRemove(t, result)
 	if findPackage(toRemove, "pkg-installed") == nil {
@@ -513,7 +555,7 @@ func TestRemove_CapabilityTrue_ConflictBased(t *testing.T) {
 func TestInstall_InvalidType(t *testing.T) {
 	tc := testcase(t, "tc-simple")
 	result, err := worker.Invoke(context.Background(), workerBinary(t),
-		"install_package",
+		"plan_install",
 		arg(map[string]string{"package": "pkg-available", "type": "invalid-type", "testcase": tc}),
 		nil)
 	if err != nil {
@@ -530,7 +572,7 @@ func TestInstall_InvalidType(t *testing.T) {
 func TestInstall_EmptyPackage(t *testing.T) {
 	tc := testcase(t, "tc-simple")
 	result, err := worker.Invoke(context.Background(), workerBinary(t),
-		"install_package",
+		"plan_install",
 		arg(map[string]string{"package": "", "testcase": tc}),
 		nil)
 	if err != nil {
@@ -544,7 +586,7 @@ func TestInstall_EmptyPackage(t *testing.T) {
 func TestInstall_EmptyRepo(t *testing.T) {
 	tc := testcase(t, "tc-simple")
 	result, err := worker.Invoke(context.Background(), workerBinary(t),
-		"install_package",
+		"plan_install",
 		arg(map[string]string{"package": "pkg-available", "repo": "", "testcase": tc}),
 		nil)
 	if err != nil {
@@ -558,7 +600,7 @@ func TestInstall_EmptyRepo(t *testing.T) {
 func TestRemove_InvalidType(t *testing.T) {
 	tc := testcase(t, "tc-simple")
 	result, err := worker.Invoke(context.Background(), workerBinary(t),
-		"remove_package",
+		"plan_remove",
 		arg(map[string]string{"package": "pkg-installed", "type": "badtype", "testcase": tc}),
 		nil)
 	if err != nil {

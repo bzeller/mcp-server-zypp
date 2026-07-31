@@ -1,12 +1,5 @@
 cmake_minimum_required(VERSION 3.17)
 
-# ─── Resolve worker binary path for the Go proxy ─────────────────────────────
-if(ZYPP_STACK_BUILD)
-  set(WORKER_BIN_PATH "$<TARGET_FILE:zypp-mcp-tool>")
-else()
-  set(WORKER_BIN_PATH "${CMAKE_INSTALL_FULL_LIBEXECDIR}/mcp-server-zypp/zypp-mcp-tool")
-endif()
-
 # ─── Redirect Go caches into the CMake build directory ────────────────────────
 # GOCACHE:    intermediate build objects → <builddir>/go-cache
 # GOMODCACHE: downloaded module zips     → <builddir>/go-mod
@@ -59,7 +52,7 @@ add_custom_target(go-mod-tidy
 # -ldflags "-X ..." injects the worker path at link time — no generated source files.
 # All Go artifacts stay under CMAKE_CURRENT_BINARY_DIR.
 set(PROXY_BIN "${CMAKE_CURRENT_BINARY_DIR}/mcp-server-zypp")
-set(PROXY_LDFLAGS "-X 'github.com/openSUSE/mcp-server-zypp/internal/config.DefaultWorkerPath=${WORKER_BIN_PATH}'")
+set(PROXY_LDFLAGS "-X 'github.com/openSUSE/mcp-server-zypp/internal/config.DefaultWorkerDir=${CMAKE_INSTALL_FULL_LIBEXECDIR}/mcp-server-zypp'")
 
 file(GLOB_RECURSE PROXY_SOURCES CONFIGURE_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/*.go")
 

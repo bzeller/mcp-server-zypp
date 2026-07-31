@@ -14,9 +14,10 @@ import (
 
 // ToolDescriptor mirrors the JSON emitted by zypp-mcp-tool --list-tools.
 type ToolDescriptor struct {
-	Name        string          `json:"name"`
-	Description string          `json:"description"`
-	InputSchema json.RawMessage `json:"input_schema"`
+	Name         string          `json:"name"`
+	Description  string          `json:"description"`
+	InputSchema  json.RawMessage `json:"input_schema"`
+	RequiresRoot bool            `json:"requires_root"`
 }
 
 // ListTools runs zypp-mcp-tool --list-tools.

@@ -1,5 +1,7 @@
 package config
 
-// DefaultWorkerPath is injected at build time by CMake via -ldflags -X.
-// When building standalone (go build without CMake), falls back to PATH lookup.
-var DefaultWorkerPath = "zypp-mcp-tool"
+// DefaultWorkerDir is injected at build time by CMake via -ldflags -X.
+// It points to the directory containing zypp-mcp-* worker binaries.
+// When building standalone (go build without CMake), falls back to the
+// directory of the running executable.
+var DefaultWorkerDir = ""
