@@ -3,44 +3,32 @@
 #include <algorithm>
 #include <sstream>
 #include <zypp-core/base/String.h>
+#include <zypp-core/base/InputStream>
+#include <zypp-core/parser/json.h>
+#include <zypp-core/parser/json/JsonValue.h>
 
-// ─── JSON helpers (minimal, no external dep) ─────────────────────────────────
+// ─── Answer parsing ──────────────────────────────────────────────────────────
+// Uses the real JSON parser rather than substring scanning — correct on any
+// valid JSON the proxy sends, not just the exact shape we expect.
 namespace
 {
-    std::string jsonEscape( const std::string & s )
-    {
-        std::string out;
-        out.reserve( s.size() + 8 );
-        for ( char c : s )
-        {
-            switch ( c )
-            {
-            case '"':  out += "\\\""; break;
-            case '\\': out += "\\\\"; break;
-            case '\n': out += "\\n";  break;
-            case '\r': out += "\\r";  break;
-            case '\t': out += "\\t";  break;
-            default:   out += c;      break;
-            }
-        }
-        return out;
-    }
-
-    /// Parse a simple {"answer": "..."} frame. Returns the value or empty on failure.
+    /// Parse a {"answer": "..."} frame. Returns the value or empty on any
+    /// parse failure or missing field — callers must treat empty as "decline".
     std::string parseAnswer( const std::string & frame )
     {
-        // Minimal extraction — does not handle nested objects.
-        auto pos = frame.find( "\"answer\"" );
-        if ( pos == std::string::npos )
-            return {};
-        pos = frame.find( '"', pos + 8 );
-        if ( pos == std::string::npos )
-            return {};
-        ++pos; // skip opening quote
-        auto end = frame.find( '"', pos );
-        if ( end == std::string::npos )
-            return {};
-        return frame.substr( pos, end - pos );
+        try
+        {
+            std::istringstream ss( frame );
+            const auto val = zypp::json::parseDocument( zypp::InputStream(ss) );
+            const auto & obj = val.asObject();
+            if ( !obj.contains( "answer" ) )
+                return {};
+            return std::string( obj.value( "answer" ).asString() );
+        }
+        catch ( const std::exception & )
+        {
+            return {}; // fail closed on malformed input
+        }
     }
 
     bool parseBoolAnswer( const std::string & frame )
@@ -55,17 +43,21 @@ zypp::KeyRingReport::KeyTrust McpKeyRingReceive::askUserToAcceptKey(
     const zypp::PublicKey & key,
     const zypp::KeyContext & ctx )
 {
-    std::ostringstream json;
-    json << R"({"type":"elicitation","method":"trust_key","data":{)"
-         << R"("fingerprint":")" << jsonEscape( key.fingerprint() ) << "\","
-         << R"("name":")" << jsonEscape( key.name() ) << "\","
-         << R"("created":")" << key.created().asString() << "\","
-         << R"("expires":")" << key.expiresAsString() << "\"";
+    zypp::json::Object data = {
+        { "fingerprint", key.fingerprint()      },
+        { "name",        key.name()             },
+        { "created",     key.created().asString() },
+        { "expires",     key.expiresAsString()  }
+    };
     if ( !ctx.empty() )
-        json << R"(,"repo":")" << jsonEscape( ctx.repoInfo().asUserString() ) << "\"";
-    json << "}}";
+        data.add( "repo", ctx.repoInfo().asUserString() );
 
-    _t.writeFrame( json.str() );
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",   "elicitation" },
+        { "method", "trust_key"   },
+        { "data",   std::move(data) }
+    } }.asJSON() );
+
     auto ans = _t.readFrame();
     if ( !ans )
         return zypp::KeyRingReport::KEY_DONT_TRUST; // fail closed on EOF
@@ -82,14 +74,16 @@ bool McpKeyRingReceive::askUserToAcceptUnsignedFile(
     const std::string & file,
     const zypp::KeyContext & ctx )
 {
-    std::ostringstream json;
-    json << R"({"type":"elicitation","method":"accept_unsigned_file","data":{)"
-         << R"("file":")" << jsonEscape( file ) << "\"";
+    zypp::json::Object data = { { "file", file } };
     if ( !ctx.empty() )
-        json << R"(,"repo":")" << jsonEscape( ctx.repoInfo().asUserString() ) << "\"";
-    json << "}}";
+        data.add( "repo", ctx.repoInfo().asUserString() );
 
-    _t.writeFrame( json.str() );
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",   "elicitation"          },
+        { "method", "accept_unsigned_file" },
+        { "data",   std::move(data)        }
+    } }.asJSON() );
+
     auto ans = _t.readFrame();
     return ans ? parseBoolAnswer( *ans ) : false;
 }
@@ -99,15 +93,19 @@ bool McpKeyRingReceive::askUserToAcceptUnknownKey(
     const std::string & id,
     const zypp::KeyContext & ctx )
 {
-    std::ostringstream json;
-    json << R"({"type":"elicitation","method":"accept_unknown_key","data":{)"
-         << R"("file":")" << jsonEscape( file ) << "\","
-         << R"("keyid":")" << jsonEscape( id ) << "\"";
+    zypp::json::Object data = {
+        { "file",  file },
+        { "keyid", id   }
+    };
     if ( !ctx.empty() )
-        json << R"(,"repo":")" << jsonEscape( ctx.repoInfo().asUserString() ) << "\"";
-    json << "}}";
+        data.add( "repo", ctx.repoInfo().asUserString() );
 
-    _t.writeFrame( json.str() );
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",   "elicitation"        },
+        { "method", "accept_unknown_key" },
+        { "data",   std::move(data)      }
+    } }.asJSON() );
+
     auto ans = _t.readFrame();
     return ans ? parseBoolAnswer( *ans ) : false;
 }
@@ -117,16 +115,20 @@ bool McpKeyRingReceive::askUserToAcceptVerificationFailed(
     const zypp::PublicKey & key,
     const zypp::KeyContext & ctx )
 {
-    std::ostringstream json;
-    json << R"({"type":"elicitation","method":"accept_verification_failed","data":{)"
-         << R"("file":")" << jsonEscape( file ) << "\","
-         << R"("fingerprint":")" << jsonEscape( key.fingerprint() ) << "\","
-         << R"("name":")" << jsonEscape( key.name() ) << "\"";
+    zypp::json::Object data = {
+        { "file",        file             },
+        { "fingerprint", key.fingerprint()},
+        { "name",        key.name()       }
+    };
     if ( !ctx.empty() )
-        json << R"(,"repo":")" << jsonEscape( ctx.repoInfo().asUserString() ) << "\"";
-    json << "}}";
+        data.add( "repo", ctx.repoInfo().asUserString() );
 
-    _t.writeFrame( json.str() );
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",   "elicitation"                 },
+        { "method", "accept_verification_failed"  },
+        { "data",   std::move(data)                }
+    } }.asJSON() );
+
     auto ans = _t.readFrame();
     return ans ? parseBoolAnswer( *ans ) : false;
 }
@@ -134,11 +136,12 @@ bool McpKeyRingReceive::askUserToAcceptVerificationFailed(
 // ─── McpDigestReceive ────────────────────────────────────────────────────────
 bool McpDigestReceive::askUserToAcceptNoDigest( const zypp::Pathname & file )
 {
-    std::ostringstream json;
-    json << R"({"type":"elicitation","method":"accept_no_digest","data":{)"
-         << R"("file":")" << jsonEscape( file.asString() ) << "\"}}";
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",   "elicitation"       },
+        { "method", "accept_no_digest"  },
+        { "data",   zypp::json::Object{ { { "file", file.asString() } } } }
+    } }.asJSON() );
 
-    _t.writeFrame( json.str() );
     auto ans = _t.readFrame();
     return ans ? parseBoolAnswer( *ans ) : false;
 }
@@ -147,12 +150,15 @@ bool McpDigestReceive::askUserToAccepUnknownDigest(
     const zypp::Pathname & file,
     const std::string & name )
 {
-    std::ostringstream json;
-    json << R"({"type":"elicitation","method":"accept_unknown_digest","data":{)"
-         << R"("file":")" << jsonEscape( file.asString() ) << "\","
-         << R"("digest":")" << jsonEscape( name ) << "\"}}";
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",   "elicitation"            },
+        { "method", "accept_unknown_digest"  },
+        { "data",   zypp::json::Object{ {
+            { "file",   file.asString() },
+            { "digest", name             }
+        } } }
+    } }.asJSON() );
 
-    _t.writeFrame( json.str() );
     auto ans = _t.readFrame();
     return ans ? parseBoolAnswer( *ans ) : false;
 }
@@ -162,13 +168,16 @@ bool McpDigestReceive::askUserToAcceptWrongDigest(
     const std::string & requested,
     const std::string & found )
 {
-    std::ostringstream json;
-    json << R"({"type":"elicitation","method":"accept_wrong_digest","data":{)"
-         << R"("file":")" << jsonEscape( file.asString() ) << "\","
-         << R"("expected":")" << jsonEscape( requested ) << "\","
-         << R"("actual":")" << jsonEscape( found ) << "\"}}";
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",   "elicitation"          },
+        { "method", "accept_wrong_digest"  },
+        { "data",   zypp::json::Object{ {
+            { "file",     file.asString() },
+            { "expected", requested        },
+            { "actual",   found            }
+        } } }
+    } }.asJSON() );
 
-    _t.writeFrame( json.str() );
     auto ans = _t.readFrame();
     return ans ? parseBoolAnswer( *ans ) : false;
 }
@@ -176,59 +185,67 @@ bool McpDigestReceive::askUserToAcceptWrongDigest(
 // ─── McpInstallReceive ───────────────────────────────────────────────────────
 void McpInstallReceive::start( zypp::Resolvable::constPtr resolvable )
 {
-    std::ostringstream json;
-    json << R"({"type":"progress","action":"install","package":")"
-         << jsonEscape( resolvable->name() ) << "\","
-         << R"("edition":")" << resolvable->edition().asString() << "\","
-         << R"("percent":0})";
-    _t.writeFrame( json.str() );
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",    "progress" },
+        { "action",  "install"  },
+        { "package", resolvable->name()               },
+        { "edition", resolvable->edition().asString()  },
+        { "percent", std::int32_t(0)                   }
+    } }.asJSON() );
 }
 
 bool McpInstallReceive::progress( int value, zypp::Resolvable::constPtr resolvable )
 {
-    std::ostringstream json;
-    json << R"({"type":"progress","action":"install","package":")"
-         << jsonEscape( resolvable->name() ) << "\","
-         << R"("percent":)" << std::max( 0, std::min( 100, value ) ) << "}";
-    _t.writeFrame( json.str() );
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",    "progress" },
+        { "action",  "install"  },
+        { "package", resolvable->name() },
+        { "percent", std::int32_t( std::max( 0, std::min( 100, value ) ) ) }
+    } }.asJSON() );
     return true; // never abort from progress
 }
 
 void McpInstallReceive::finish( zypp::Resolvable::constPtr, Error error, const std::string &, RpmLevel )
 {
-    std::ostringstream json;
-    json << R"({"type":"progress","action":"install","finished":true,"error":)"
-         << ( error != NO_ERROR ? "true" : "false" ) << "}";
-    _t.writeFrame( json.str() );
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",     "progress" },
+        { "action",   "install"  },
+        { "finished", true       },
+        { "error",    error != NO_ERROR }
+    } }.asJSON() );
 }
 
 // ─── McpRemoveReceive ────────────────────────────────────────────────────────
 void McpRemoveReceive::start( zypp::Resolvable::constPtr resolvable )
 {
-    std::ostringstream json;
-    json << R"({"type":"progress","action":"remove","package":")"
-         << jsonEscape( resolvable->name() ) << "\","
-         << R"("edition":")" << resolvable->edition().asString() << "\","
-         << R"("percent":0})";
-    _t.writeFrame( json.str() );
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",    "progress" },
+        { "action",  "remove"   },
+        { "package", resolvable->name()               },
+        { "edition", resolvable->edition().asString()  },
+        { "percent", std::int32_t(0)                   }
+    } }.asJSON() );
 }
 
 bool McpRemoveReceive::progress( int value, zypp::Resolvable::constPtr resolvable )
 {
-    std::ostringstream json;
-    json << R"({"type":"progress","action":"remove","package":")"
-         << jsonEscape( resolvable->name() ) << "\","
-         << R"("percent":)" << std::max( 0, std::min( 100, value ) ) << "}";
-    _t.writeFrame( json.str() );
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",    "progress" },
+        { "action",  "remove"   },
+        { "package", resolvable->name() },
+        { "percent", std::int32_t( std::max( 0, std::min( 100, value ) ) ) }
+    } }.asJSON() );
     return true;
 }
 
 void McpRemoveReceive::finish( zypp::Resolvable::constPtr, Error error, const std::string & )
 {
-    std::ostringstream json;
-    json << R"({"type":"progress","action":"remove","finished":true,"error":)"
-         << ( error != NO_ERROR ? "true" : "false" ) << "}";
-    _t.writeFrame( json.str() );
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",     "progress" },
+        { "action",   "remove"   },
+        { "finished", true       },
+        { "error",    error != NO_ERROR }
+    } }.asJSON() );
 }
 
 // ─── McpCallbackScope ────────────────────────────────────────────────────────
