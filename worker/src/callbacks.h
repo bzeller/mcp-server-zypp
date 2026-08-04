@@ -82,6 +82,42 @@ private:
     McpTransport & _t;
 };
 
+// ─── Download progress ────────────────────────────────────────────────────────
+/// Fires per-package during commit while zypp fetches packages from repos.
+/// Never aborts (progress always returns true).
+struct McpDownloadReceive
+    : public zypp::callback::ReceiveReport<zypp::repo::DownloadResolvableReport>
+{
+    explicit McpDownloadReceive( McpTransport & t ) : _t( t ) {}
+
+    void infoInCache( zypp::Resolvable::constPtr resolvable, const zypp::Pathname & localfile ) override;
+    void start( zypp::Resolvable::constPtr resolvable, const zypp::Url & url ) override;
+    bool progress( int value, zypp::Resolvable::constPtr resolvable ) override;
+    void finish( zypp::Resolvable::constPtr resolvable, Error error, const std::string & reason ) override;
+
+private:
+    McpTransport & _t;
+};
+
+// ─── Commit preload progress ──────────────────────────────────────────────────
+/// Fires for the overall concurrent preload of all commit downloads — a
+/// single progress stream covering the whole batch, distinct from the
+/// per-package McpDownloadReceive above. Never aborts (progress always
+/// returns true).
+struct McpCommitPreloadReceive
+    : public zypp::callback::ReceiveReport<zypp::media::CommitPreloadReport>
+{
+    explicit McpCommitPreloadReceive( McpTransport & t ) : _t( t ) {}
+
+    void start( const zypp::callback::UserData & userData = zypp::callback::UserData() ) override;
+    bool progress( int value, const zypp::callback::UserData & userData = zypp::callback::UserData() ) override;
+    void fileStart( const zypp::Pathname & localfile, const zypp::callback::UserData & userData = zypp::callback::UserData() ) override;
+    void finish( Result res, const zypp::callback::UserData & userData = zypp::callback::UserData() ) override;
+
+private:
+    McpTransport & _t;
+};
+
 // ─── RAII scope — connect/disconnect all receivers ───────────────────────────
 /// Lifetime: create once in main(), destroyed on process exit.
 class McpCallbackScope
@@ -94,10 +130,12 @@ public:
     McpCallbackScope & operator=( const McpCallbackScope & ) = delete;
 
 private:
-    McpKeyRingReceive _keyring;
-    McpDigestReceive  _digest;
-    McpInstallReceive _install;
-    McpRemoveReceive  _remove;
+    McpKeyRingReceive        _keyring;
+    McpDigestReceive         _digest;
+    McpInstallReceive        _install;
+    McpRemoveReceive         _remove;
+    McpDownloadReceive       _download;
+    McpCommitPreloadReceive  _preload;
 };
 
 #endif // MCP_SERVER_ZYPP_CALLBACKS_H

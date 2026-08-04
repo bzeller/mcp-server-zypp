@@ -248,14 +248,127 @@ void McpRemoveReceive::finish( zypp::Resolvable::constPtr, Error error, const st
     } }.asJSON() );
 }
 
+// ─── McpDownloadReceive ──────────────────────────────────────────────────────
+void McpDownloadReceive::infoInCache( zypp::Resolvable::constPtr resolvable, const zypp::Pathname & )
+{
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",    "progress" },
+        { "action",  "download" },
+        { "package", resolvable->name() },
+        { "cached",  true              }
+    } }.asJSON() );
+}
+
+void McpDownloadReceive::start( zypp::Resolvable::constPtr resolvable, const zypp::Url & )
+{
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",    "progress" },
+        { "action",  "download" },
+        { "package", resolvable->name()               },
+        { "edition", resolvable->edition().asString()  },
+        { "percent", std::int32_t(0)                   }
+    } }.asJSON() );
+}
+
+bool McpDownloadReceive::progress( int value, zypp::Resolvable::constPtr resolvable )
+{
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",    "progress" },
+        { "action",  "download" },
+        { "package", resolvable->name() },
+        { "percent", std::int32_t( std::max( 0, std::min( 100, value ) ) ) }
+    } }.asJSON() );
+    return true; // never abort from progress
+}
+
+void McpDownloadReceive::finish( zypp::Resolvable::constPtr resolvable, Error error, const std::string & )
+{
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",     "progress" },
+        { "action",   "download" },
+        { "package",  resolvable->name() },
+        { "finished", true       },
+        { "error",    error != NO_ERROR }
+    } }.asJSON() );
+}
+
+// ─── McpCommitPreloadReceive ─────────────────────────────────────────────────
+void McpCommitPreloadReceive::start( const zypp::callback::UserData & )
+{
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",    "progress" },
+        { "action",  "preload"  },
+        { "started", true       }
+    } }.asJSON() );
+}
+
+bool McpCommitPreloadReceive::progress( int value, const zypp::callback::UserData & userData )
+{
+    zypp::json::Object frame = {
+        { "type",    "progress" },
+        { "action",  "preload"  },
+        { "percent", std::int32_t( std::max( 0, std::min( 100, value ) ) ) }
+    };
+
+    // Documented optional fields (ZYppCallbacks.h: CommitPreloadReport::progress) —
+    // only present when zypp actually knows them, so add conditionally.
+    const double dbpsAvg = userData.get<double>( "dbps_avg", -1.0 );
+    if ( dbpsAvg >= 0.0 )
+        frame.add( "dbps_avg", dbpsAvg );
+
+    const double dbpsCurrent = userData.get<double>( "dbps_current", -1.0 );
+    if ( dbpsCurrent >= 0.0 )
+        frame.add( "dbps_current", dbpsCurrent );
+
+    const double bytesReceived = userData.get<double>( "bytesReceived", -1.0 );
+    if ( bytesReceived >= 0.0 )
+        frame.add( "bytes_received", bytesReceived );
+
+    const double bytesRequired = userData.get<double>( "bytesRequired", -1.0 );
+    if ( bytesRequired >= 0.0 )
+        frame.add( "bytes_required", bytesRequired );
+
+    _t.writeFrame( frame.asJSON() );
+    return true; // never abort from progress
+}
+
+void McpCommitPreloadReceive::fileStart( const zypp::Pathname & localfile, const zypp::callback::UserData & userData )
+{
+    zypp::json::Object frame = {
+        { "type",   "progress" },
+        { "action", "preload"  },
+        { "file",   localfile.asString() }
+    };
+
+    // Documented optional field (ZYppCallbacks.h: CommitPreloadReport::fileStart).
+    const zypp::Url url = userData.get<zypp::Url>( "Url", zypp::Url() );
+    if ( url.isValid() )
+        frame.add( "url", url.asString() );
+
+    _t.writeFrame( frame.asJSON() );
+}
+
+void McpCommitPreloadReceive::finish( Result res, const zypp::callback::UserData & )
+{
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",     "progress"            },
+        { "action",   "preload"             },
+        { "finished", true                  },
+        { "error",    res != SUCCESS        }
+    } }.asJSON() );
+}
+
 // ─── McpCallbackScope ────────────────────────────────────────────────────────
 McpCallbackScope::McpCallbackScope( McpTransport & t )
-    : _keyring( t ), _digest( t ), _install( t ), _remove( t )
+    : _keyring( t ), _digest( t ), _install( t ), _remove( t ),
+      _download( t ), _preload( t )
 {
     _keyring.connect();
     _digest.connect();
     _install.connect();
     _remove.connect();
+    _download.connect();
+    _preload.connect();
 }
 
 McpCallbackScope::~McpCallbackScope()
@@ -264,4 +377,6 @@ McpCallbackScope::~McpCallbackScope()
     _digest.disconnect();
     _install.disconnect();
     _remove.disconnect();
+    _download.disconnect();
+    _preload.disconnect();
 }
