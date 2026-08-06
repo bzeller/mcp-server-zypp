@@ -126,4 +126,14 @@ add_test(NAME mcp_worker_tests
   WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
 )
 
+# Pure unit tests (no worker binary, no testcase data) — e.g. the
+# cancellation-latch logic in internal/worker, tested against io.Pipe()
+# rather than a real subprocess.
+add_test(NAME mcp_proxy_unit_tests
+  COMMAND "${CMAKE_COMMAND}" -E env
+          ${GO_ENV}
+          "${GO_EXECUTABLE}" test -v ./internal/...
+  WORKING_DIRECTORY "${CMAKE_CURRENT_SOURCE_DIR}"
+)
+
 install(PROGRAMS "${PROXY_BIN}" DESTINATION "${CMAKE_INSTALL_BINDIR}")

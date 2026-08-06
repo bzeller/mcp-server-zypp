@@ -118,6 +118,36 @@ private:
     McpTransport & _t;
 };
 
+// ─── Commit-active barrier ───────────────────────────────────────────────────
+/// Fires via CommitActiveReport's start() — called synchronously by
+/// TargetImpl::commit (see ZYppCallbacks.h: CommitActiveReport for the full
+/// rationale). This is the single, backend-agnostic point at which the RPM
+/// transaction becomes irreversible.
+///
+/// start() blocks synchronously, writing a "zypp_control" frame
+/// (event: "commit_active") and then waiting for the proxy's ack, before
+/// returning. This guarantees the proxy has definitely applied its
+/// non-cancellable latch before commit() proceeds into the actual
+/// transaction — closing the race where a kill() could otherwise land
+/// between the frame being written and the proxy processing it. This is
+/// the sole, authoritative source of that latch — no separate generic
+/// field is used, since no other callback emits this signal.
+///
+/// Returning false (on a missing/malformed/declining ack, or on EOF —
+/// e.g. the proxy died) aborts the commit before anything has been
+/// touched, rather than proceeding uncontrolled.
+struct McpCommitActiveReceive
+    : public zypp::callback::ReceiveReport<zypp::target::CommitActiveReport>
+{
+    explicit McpCommitActiveReceive( McpTransport & t ) : _t( t ) {}
+
+    bool start( const UserData & ) override;
+    void reportend() override;
+
+private:
+    McpTransport & _t;
+};
+
 // ─── RAII scope — connect/disconnect all receivers ───────────────────────────
 /// Lifetime: create once in main(), destroyed on process exit.
 class McpCallbackScope
@@ -136,6 +166,7 @@ private:
     McpRemoveReceive         _remove;
     McpDownloadReceive       _download;
     McpCommitPreloadReceive  _preload;
+    McpCommitActiveReceive   _commitActive;
 };
 
 #endif // MCP_SERVER_ZYPP_CALLBACKS_H

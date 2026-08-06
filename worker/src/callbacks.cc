@@ -358,10 +358,64 @@ void McpCommitPreloadReceive::finish( Result res, const zypp::callback::UserData
     } }.asJSON() );
 }
 
+// ─── McpCommitActiveReceive ──────────────────────────────────────────────────
+/// Both hooks use "zypp_control", not "progress": CommitActiveReport carries
+/// no domain data (no package name, no percent) — it is a pure lifecycle
+/// marker for this worker's internal protocol, not a user-facing progress
+/// update. "zypp_control" is namespaced separately from MCP's own types
+/// since it is specific to zypp-mcp-tool's wire protocol. The proxy's frame
+/// loop has no case for "zypp_control", so both frames fall through
+/// untouched by any user-facing notification path. The proxy instead treats
+/// the specific combination type=="zypp_control" && event=="commit_active"
+/// as the sole, authoritative signal to latch cancellation off — no
+/// separate generic field is needed since this is the only place that
+/// signal is ever emitted.
+bool McpCommitActiveReceive::start( const UserData & )
+{
+    // Announce the point of no return and BLOCK until the proxy has
+    // definitely applied its non-cancellable latch before returning. See
+    // ZYppCallbacks.h: CommitActiveReport for the full race-condition
+    // rationale — without this synchronous handshake, the proxy could still
+    // kill() between writing this frame and processing it.
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",  "zypp_control"  },
+        { "event", "commit_active" }
+    } }.asJSON() );
+
+    // Block for the proxy's ack. Unlike the elicitation/digest handshakes,
+    // a missing or malformed reply here means "do not proceed" rather than
+    // "fail closed to a safe default" — there is no safe default once the
+    // caller might proceed into an irreversible RPM transaction, so we
+    // require an explicit, well-formed {"ack":true}.
+    auto ans = _t.readFrame();
+    if ( !ans )
+        return false; // proxy died / pipe broken — do not proceed uncontrolled
+
+    try
+    {
+        std::istringstream ss( *ans );
+        const auto val = zypp::json::parseDocument( zypp::InputStream(ss) );
+        const auto & obj = val.asObject();
+        return obj.contains( "ack" ) && bool( obj.value( "ack" ).asBool() );
+    }
+    catch ( const std::exception & )
+    {
+        return false; // malformed ack — fail closed
+    }
+}
+
+void McpCommitActiveReceive::reportend()
+{
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",  "zypp_control"    },
+        { "event", "commit_finished" }
+    } }.asJSON() );
+}
+
 // ─── McpCallbackScope ────────────────────────────────────────────────────────
 McpCallbackScope::McpCallbackScope( McpTransport & t )
     : _keyring( t ), _digest( t ), _install( t ), _remove( t ),
-      _download( t ), _preload( t )
+      _download( t ), _preload( t ), _commitActive( t )
 {
     _keyring.connect();
     _digest.connect();
@@ -369,6 +423,7 @@ McpCallbackScope::McpCallbackScope( McpTransport & t )
     _remove.connect();
     _download.connect();
     _preload.connect();
+    _commitActive.connect();
 }
 
 McpCallbackScope::~McpCallbackScope()
@@ -379,4 +434,5 @@ McpCallbackScope::~McpCallbackScope()
     _remove.disconnect();
     _download.disconnect();
     _preload.disconnect();
+    _commitActive.disconnect();
 }
