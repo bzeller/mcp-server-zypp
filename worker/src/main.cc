@@ -55,9 +55,9 @@ namespace
           &schema_plan_install(),     false, tool_plan_install     },
         { "plan_remove",      "Plan removal of a package. Returns the list of packages that would be removed for human approval before confirmation.",
           &schema_plan_remove(),      false, tool_plan_remove      },
-        { "confirm_install",  "Execute a previously planned installation. Requires root. Re-solves and commits the transaction.",
+        { "confirm_install",  "Execute a previously planned installation. Requires root. Re-solves and commits the transaction. Cancellable during solving and download phases; once the RPM transaction begins it cannot be interrupted and will run to completion.",
           &schema_confirm_install(),  true,  tool_confirm_install  },
-        { "confirm_remove",   "Execute a previously planned removal. Requires root. Re-solves and commits the transaction.",
+        { "confirm_remove",   "Execute a previously planned removal. Requires root. Re-solves and commits the transaction. Cancellable during solving and download phases; once the RPM transaction begins it cannot be interrupted and will run to completion.",
           &schema_confirm_remove(),   true,  tool_confirm_remove   },
     } };
 
