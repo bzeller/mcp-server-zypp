@@ -3,6 +3,8 @@
 #include "../transport.h"
 #include "../system.h"
 
+#include <unistd.h>
+
 #include <zypp/Resolver.h>
 #include <zypp/ZYppCommitPolicy.h>
 #include <zypp/ZYppCommitResult.h>
@@ -23,6 +25,11 @@ const zypp::json::Object & schema_confirm_remove() { return kConfirmRemoveSchema
 // ─── Tool implementation ─────────────────────────────────────────────────────
 int tool_confirm_remove( const zypp::json::Object & arg, McpTransport & t )
 {
+    if ( geteuid() != 0 )
+    {
+        t.writeFrame( jsonError( "PERMISSION_DENIED", "confirm_remove requires root privileges." ) );
+        return 1;
+    }
     // Always live system — no testcase parameter.
     ZYpp::Ptr zypp = loadSystem( std::nullopt );
 

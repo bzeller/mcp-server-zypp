@@ -4,11 +4,25 @@
 #include "registry.h"
 
 #include <string>
+#include <string_view>
 #include <zypp/ResKind.h>
 #include <zypp/sat/SolvAttr.h>
 #include <zypp/PoolItem.h>
 #include <zypp/ui/Selectable.h>
 #include <zypp/misc/PoolInstallState.h>
+
+// ─── JSON error helper ────────────────────────────────────────────────────────
+// Single shared builder for the generic {"type":"error","code":...,"detail":...}
+// shape. Use this instead of hand-rolling a zypp::json::Object literal at every
+// call site — keeps the error frame shape consistent everywhere.
+inline std::string jsonError( std::string_view code, std::string_view detail )
+{
+    return zypp::json::Object{ {
+        { "type",   "error" },
+        { "code",   std::string(code)   },
+        { "detail", std::string(detail) }
+    } }.asJSON();
+}
 
 // ─── Shared conversion helpers ────────────────────────────────────────────────
 // Used across multiple tool implementations — not validation, just mapping.

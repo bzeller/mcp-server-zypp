@@ -1,6 +1,7 @@
 #include "transport.h"
 #include "callbacks.h"
 #include "tools/registry.h"
+#include "tools/tools.h"
 
 #include <cstdlib>
 #include <sstream>
@@ -62,14 +63,7 @@ namespace
     } };
 
     // ─── JSON helpers ─────────────────────────────────────────────────────────
-    std::string jsonError( std::string_view code, std::string_view detail )
-    {
-        return zypp::json::Object{ {
-            { "type",   "error" },
-            { "code",   std::string(code)   },
-            { "detail", std::string(detail) }
-        } }.asJSON();
-    }
+    // jsonError() is shared — see tools/tools.h.
 
     // ─── --list-tools handler ─────────────────────────────────────────────────
     // Plain stdout write — no framing. The Go proxy reads this with .Output()
