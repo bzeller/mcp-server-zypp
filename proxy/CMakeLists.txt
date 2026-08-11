@@ -1,5 +1,20 @@
 cmake_minimum_required(VERSION 3.17)
 
+# ─── HTTP transport (debugging only) ─────────────────────────────────────────
+# Off by default: HTTP has no authentication and must never be exposed beyond
+# localhost. Enabling this option compiles runHTTP (http_enabled.go) into the
+# binary via the enable_http Go build tag; otherwise a stub (http_disabled.go)
+# reports "-transport=http" as unsupported at runtime.
+option(ZYPP_MCP_ENABLE_HTTP "Enable HTTP transport in the Go proxy (local debugging only)" OFF)
+
+set(PROXY_GO_TAGS "")
+if(ZYPP_MCP_ENABLE_HTTP)
+  set(PROXY_GO_TAGS -tags enable_http)
+endif()
+
+
+MESSAGE("Go tags: ${PROXY_GO_TAGS}")
+
 # ─── Redirect Go caches into the CMake build directory ────────────────────────
 # GOCACHE:    intermediate build objects → <builddir>/go-cache
 # GOMODCACHE: downloaded module zips     → <builddir>/go-mod
@@ -77,6 +92,7 @@ add_custom_command(
   OUTPUT  "${PROXY_BIN}"
   COMMAND "${CMAKE_COMMAND}" -E env ${GO_ENV}
           "${GO_EXECUTABLE}" build
+            ${PROXY_GO_TAGS}
             -ldflags "${PROXY_LDFLAGS}"
             -o "${PROXY_BIN}"
             ./cmd/mcp-server-zypp

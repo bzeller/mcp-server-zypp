@@ -4,7 +4,6 @@ import (
 	"context"
 	"flag"
 	"log/slog"
-	"net/http"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -18,8 +17,7 @@ import (
 
 func main() {
 	var (
-		transport = flag.String("transport", "stdio", "Transport mode: stdio or http")
-		addr      = flag.String("addr", ":8080", "HTTP listen address (only used with -transport=http)")
+		transport = flag.String("transport", "stdio", transportUsage)
 		workerDir = flag.String("worker-dir", config.DefaultWorkerDir, "Directory containing zypp-mcp-* worker binaries")
 	)
 	flag.Parse()
@@ -59,19 +57,12 @@ func main() {
 		}
 
 	case "http":
-		handler := mcp.NewStreamableHTTPHandler(
-			func(_ *http.Request) *mcp.Server { return server },
-			nil,
-		)
-		srv := &http.Server{Addr: *addr, Handler: handler}
-
-		go func() {
-			<-ctx.Done()
-			_ = srv.Close()
-		}()
-
-		slog.Info("starting mcp-server-zypp", "transport", "http", "addr", *addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		// runHTTP is implemented in http_enabled.go or http_disabled.go,
+		// selected at build time via the enable_http build tag (see
+		// CMakeLists.txt: ENABLE_HTTP option). HTTP is for local debugging
+		// only and is not compiled into the binary by default.
+		slog.Info("starting mcp-server-zypp", "transport", "http")
+		if err := runHTTP(ctx, server); err != nil {
 			slog.Error("http server error", "err", err)
 			os.Exit(1)
 		}
