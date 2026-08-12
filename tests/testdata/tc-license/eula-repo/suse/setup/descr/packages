@@ -1,0 +1,8 @@
+=Ver: 2.0
+##----------------------------------------
+=Pkg: pkg-license 1 1 x86_64
++Prv:
+pkg-license = 1-1
+-Prv:
+=Eul: You must agree to this license before installing pkg-license.
+##----------------------------------------
