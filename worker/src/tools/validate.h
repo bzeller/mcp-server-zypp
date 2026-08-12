@@ -2,6 +2,7 @@
 #define MCP_SERVER_ZYPP_VALIDATE_H
 
 #include <string>
+#include <set>
 #include <initializer_list>
 #include <zypp-core/base/Exception.h>
 #include <zypp-core/base/String.h>
@@ -29,6 +30,8 @@ namespace validate
     inline std::string requireNonEmpty( const zypp::json::Object & arg,
                                         const std::string & name )
     {
+        if ( !arg.contains(name) )
+            fail( name, "", "Argument is required." );
         const std::string val =
             static_cast<std::string>( arg.value(name).asString() );
         if ( val.empty() )
@@ -42,6 +45,8 @@ namespace validate
                                     const std::string & name,
                                     std::initializer_list<const char *> allowed )
     {
+        if ( !arg.contains(name) )
+            fail( name, "", "Argument is required." );
         const std::string val =
             static_cast<std::string>( arg.value(name).asString() );
         for ( const char * a : allowed )
@@ -63,6 +68,8 @@ namespace validate
                                        const std::string & pattern,
                                        const std::string & hint )
     {
+        if ( !arg.contains(name) )
+            fail( name, "", "Argument is required." );
         const std::string val =
             static_cast<std::string>( arg.value(name).asString() );
         // NOTE: intentionally not `static` — a function-local static regex
@@ -105,6 +112,20 @@ namespace validate
         if ( !arg.contains(name) )
             return defaultValue;
         return arg.value(name).asBool();
+    }
+
+    /// Get an optional array-of-strings argument — returns an empty set if
+    /// absent. Used for e.g. confirm_install's accepted_licenses, where
+    /// caller-supplied order/duplicates carry no meaning.
+    inline std::set<std::string> optionalStringSet( const zypp::json::Object & arg,
+                                                     const std::string & name )
+    {
+        std::set<std::string> result;
+        if ( !arg.contains(name) )
+            return result;
+        for ( const auto & v : arg.value(name).asArray() )
+            result.insert( std::string( v.asString() ) );
+        return result;
     }
 }
 
