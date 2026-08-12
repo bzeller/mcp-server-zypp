@@ -5,6 +5,7 @@
 #include <zypp/misc/LoadTestcase.h>
 #include <zypp/misc/TestcaseSetup.h>
 #include <zypp/RepoManager.h>
+#include <zypp/TmpPath.h>
 #include <zypp/sat/Pool.h>
 
 zypp::ZYpp::Ptr loadSystem( const std::optional<zypp::Pathname> & testcase )
@@ -30,7 +31,16 @@ zypp::ZYpp::Ptr loadSystem( const std::optional<zypp::Pathname> & testcase )
         if ( !loader.loadTestcaseAt( *testcase, &err ) )
             ZYPP_THROW( zypp::Exception( err ) );
 
-        zypp::RepoManager tempMgr( zypp::RepoManagerOptions::makeTestSetup( *testcase ) );
+        // Repo cache (raw/solv/packages) must not be written into the testcase
+        // fixture directory itself — that would leave stray, mutable state
+        // in what's otherwise a read-only, checked-in test fixture. Only
+        // repos loaded via a "testcase:" Url (see TestcaseSetup.cc) actually
+        // go through RepoManager's cache machinery at all; Testtags/Helix
+        // repos are loaded straight into the pool and never touch this path.
+        // The cache only needs to survive this scope — applySetup() below
+        // already fully loads the pool before tmpCache is torn down.
+        zypp::filesystem::TmpDir tmpCache;
+        zypp::RepoManager tempMgr( zypp::RepoManagerOptions::makeTestSetup( tmpCache.path() ) );
 
         // AS_UNIVERSE: repos + locales + autoinstalled + vendor lists + modalias
         // + multiversion — but NOT AS_SOLVER_FLAGS. Solver opinions come from
