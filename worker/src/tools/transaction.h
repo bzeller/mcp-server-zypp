@@ -8,8 +8,11 @@
  * guarantees that confirm re-runs exactly the same solver setup as plan.
  */
 
+#include <map>
 #include <optional>
+#include <set>
 #include <string>
+#include <vector>
 
 #include <zypp/ZYpp.h>
 #include <zypp/ResPool.h>
@@ -53,5 +56,43 @@ zypp::json::Object planInstallToJson( const std::string &   toolName,
 
 zypp::json::Object planRemoveToJson( const std::string &   toolName,
                                      const zypp::ResPool & pool );
+
+// ─── License confirmation ─────────────────────────────────────────────────────
+// No libzypp callback exists for license acceptance (unlike KeyRingReport/
+// DigestReport) — zypper itself handles this entirely at the caller level
+// (zypper/src/misc.cc: confirm_licenses), before commit() is ever invoked.
+// We follow the same shape, but adapted to our stateless request/response
+// model: rather than blocking mid-call on an interactive elicitation,
+// plan_install surfaces exactly what needs confirming (via
+// planInstallToJson's "licenses" array, using the same grouping/ids as
+// here), and the caller passes back accepted_licenses on confirm_install.
+
+/// One group of packages sharing an identical license text requiring
+/// confirmation (matches zypper's dedup-by-text behavior — multiple
+/// packages, e.g. sub-packages of one product, often share one license).
+struct LicenseGroup
+{
+    std::string              text;
+    std::vector<std::string> packages;
+};
+
+/// Collect to-be-installed items with an unconfirmed license
+/// (needToAcceptLicense() true, licenseToConfirm() non-empty), deduped by
+/// license text. Map key is a stable, deterministic identifier for the
+/// license text ("license_id") — stable across the plan_install call and
+/// any later confirm_install call against the same pool state.
+std::map<std::string, LicenseGroup> collectLicensesToConfirm( const zypp::ResPool & pool );
+
+/// Verify every license collected by collectLicensesToConfirm is present
+/// in acceptedLicenseIds. Returns true if nothing is outstanding. On
+/// failure, writes a LICENSE_CONFIRMATION_REQUIRED error frame
+/// re-surfacing the missing license(s) (license_id/text/packages) so the
+/// caller can obtain confirmation and retry with accepted_licenses
+/// populated — and returns false. Must be called after a successful
+/// resolvePool() and before commit().
+bool checkLicensesAccepted( const zypp::ResPool &          pool,
+                           const std::set<std::string> & acceptedLicenseIds,
+                           const std::string &            toolName,
+                           McpTransport &                  t );
 
 #endif // MCP_SERVER_ZYPP_TRANSACTION_H
