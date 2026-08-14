@@ -1,6 +1,6 @@
 #include "registry.h"
 #include "../transport.h"
-#include "../system.h"
+#include "../context.h"
 
 #include <zypp/ResPool.h>
 #include <zypp/Patch.h>
@@ -116,8 +116,10 @@ namespace
 }
 
 // ─── Tool implementation ─────────────────────────────────────────────────────
-int tool_updates( const zypp::json::Object & arg, McpTransport & t )
+int tool_updates( const zypp::json::Object & arg, ToolContext & ctx )
 {
+    McpTransport & t = ctx.transport();
+
     // ── Validate and parse all arguments upfront ──────────────────────────────
     // All validation happens before loadSystem() so bad input fails fast
     // without acquiring the ZYpp lock or touching the pool.
@@ -187,13 +189,8 @@ int tool_updates( const zypp::json::Object & arg, McpTransport & t )
                 "Expected a numeric Bugzilla issue number (e.g. 1234567)." );
     }
 
-    const std::optional<zypp::Pathname> testcase =
-        arg.contains("testcase")
-            ? std::optional<zypp::Pathname>( static_cast<std::string>(arg.value("testcase").asString()) )
-            : std::nullopt;
-
     // ── Load system — ZYpp lock acquired here ─────────────────────────────────
-    ZYpp::Ptr zypp = loadSystem( testcase );
+    ZYpp::Ptr zypp = ctx.loadSystemFromArg( arg );
 
     // ── Iterate patches ───────────────────────────────────────────────────────
     zypp::json::Array patches;

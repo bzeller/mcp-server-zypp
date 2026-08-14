@@ -1,7 +1,7 @@
 #include "tools.h"
 #include "validate.h"
 #include "../transport.h"
-#include "../system.h"
+#include "../context.h"
 
 #include <zypp/ResPool.h>
 #include <zypp/sat/WhatProvides.h>
@@ -48,23 +48,20 @@ static const zypp::json::Object kFindProvidersSchema = {
 const zypp::json::Object & schema_find_providers() { return kFindProvidersSchema; }
 
 // ─── Tool implementation ─────────────────────────────────────────────────────
-int tool_find_providers( const zypp::json::Object & arg, McpTransport & t )
+int tool_find_providers( const zypp::json::Object & arg, ToolContext & ctx )
 {
+    McpTransport & t = ctx.transport();
+
     // ── Validate arguments ────────────────────────────────────────────────────
     const std::string capStr = validate::requireNonEmpty( arg, "capability" );
     const std::string repo   = validate::optionalNonEmpty( arg, "repo" );
     const std::string type   = validate::optionalEnum( arg, "type",
         { "package", "patch", "pattern", "product", "all" } );
 
-    const std::optional<zypp::Pathname> testcase =
-        arg.contains("testcase")
-            ? std::optional<zypp::Pathname>( validate::requireNonEmpty( arg, "testcase" ) )
-            : std::nullopt;
-
     const bool installedOnly = validate::optionalBool( arg, "installed_only" );
 
     // ── Load pool ─────────────────────────────────────────────────────────────
-    ZYpp::Ptr zypp = loadSystem( testcase );
+    ZYpp::Ptr zypp = ctx.loadSystemFromArg( arg );
 
     // Default to package — WhatProvides returns all kinds; users asking
     // "what provides libcurl?" want packages, not patches. Use type=all to override.

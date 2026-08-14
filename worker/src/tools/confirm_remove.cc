@@ -1,7 +1,7 @@
 #include "transaction.h"
 #include "tools.h"
 #include "../transport.h"
-#include "../system.h"
+#include "../context.h"
 
 #include <unistd.h>
 
@@ -23,15 +23,17 @@ static const zypp::json::Object kConfirmRemoveSchema = {
 const zypp::json::Object & schema_confirm_remove() { return kConfirmRemoveSchema; }
 
 // ─── Tool implementation ─────────────────────────────────────────────────────
-int tool_confirm_remove( const zypp::json::Object & arg, McpTransport & t )
+int tool_confirm_remove( const zypp::json::Object & arg, ToolContext & ctx )
 {
+    McpTransport & t = ctx.transport();
+
     if ( geteuid() != 0 )
     {
         t.writeFrame( jsonError( "PERMISSION_DENIED", "confirm_remove requires root privileges." ) );
         return 1;
     }
     // Always live system — no testcase parameter.
-    ZYpp::Ptr zypp = loadSystem( std::nullopt );
+    ZYpp::Ptr zypp = ctx.loadLiveSystem();
 
     const auto res = setupRemove( arg, zypp, "confirm_remove", t );
     if ( res == SetupRemoveResult::NotInstalled ) return 0;

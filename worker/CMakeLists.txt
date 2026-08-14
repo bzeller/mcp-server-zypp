@@ -34,6 +34,7 @@ endif()
 # second compilation of the same translation units.
 set(WORKER_HEADERS
   src/transport.h
+  src/context.h
   src/callbacks.h
   src/system.h
   src/tools/registry.h
@@ -44,6 +45,7 @@ set(WORKER_HEADERS
 
 set(WORKER_LIB_SOURCES
   src/transport.cc
+  src/context.cc
   src/callbacks.cc
   src/system.cc
   src/tools/transaction.cc

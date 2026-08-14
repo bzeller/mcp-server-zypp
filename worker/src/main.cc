@@ -1,4 +1,5 @@
 #include "transport.h"
+#include "context.h"
 #include "callbacks.h"
 #include "tools/registry.h"
 #include "tools/tools.h"
@@ -97,7 +98,7 @@ int main( int argc, char ** argv )
     zypp::base::LogControl::instance().logfile( logfile );
 
     const Args args = parseArgs( argc, argv );
-    McpTransport transport;
+    ToolContext ctx;
 
     // ─── --list-tools: static, no ZYpp lock needed, no framing ──────────────
     if ( args.listTools )
@@ -105,7 +106,7 @@ int main( int argc, char ** argv )
 
     if ( args.tool.empty() )
     {
-        transport.writeFrame( jsonError( "USAGE",
+        ctx.transport().writeFrame( jsonError( "USAGE",
             "Usage: zypp-mcp-tool --list-tools | --tool <name> [--arg <json>]" ) );
         return 2;
     }
@@ -122,29 +123,29 @@ int main( int argc, char ** argv )
         }
         catch ( const std::exception & e )
         {
-            transport.writeFrame( jsonError( "INVALID_ARG", e.what() ) );
+            ctx.transport().writeFrame( jsonError( "INVALID_ARG", e.what() ) );
             return 2;
         }
     }
 
     // ─── Register callbacks for the lifetime of this process ─────────────────
-    McpCallbackScope callbacks( transport );
+    McpCallbackScope callbacks( ctx.transport() );
 
     // ─── Dispatch via registry ───────────────────────────────────────────────
-    // loadSystem() is called inside each tool — it acquires the ZYpp lock and
-    // loads the pool. The LOCKED error is caught here if another process holds
-    // the lock at the point loadSystem() calls getZYpp() or defaultLoadSystem().
+    // loadSystem() is called inside each tool (via ToolContext) — it acquires
+    // the ZYpp lock and loads the pool. The LOCKED error is caught here if
+    // another process holds the lock at that point.
     for ( const auto & td : kRegistry )
     {
         if ( td.name == args.tool )
         {
             try
             {
-                return td.execute( parsedArg, transport );
+                return td.execute( parsedArg, ctx );
             }
             catch ( const zypp::ZYppFactoryException & e )
             {
-                transport.writeFrame( zypp::json::Object{ {
+                ctx.transport().writeFrame( zypp::json::Object{ {
                     { "type",        "error"        },
                     { "code",        "LOCKED"       },
                     { "locker_pid",  e.lockerPid()  },
@@ -154,12 +155,12 @@ int main( int argc, char ** argv )
             }
             catch ( const std::exception & e )
             {
-                transport.writeFrame( jsonError( "EXCEPTION", e.what() ) );
+                ctx.transport().writeFrame( jsonError( "EXCEPTION", e.what() ) );
                 return 1;
             }
         }
     }
 
-    transport.writeFrame( jsonError( "UNKNOWN_TOOL", args.tool ) );
+    ctx.transport().writeFrame( jsonError( "UNKNOWN_TOOL", args.tool ) );
     return 2;
 }

@@ -1,7 +1,7 @@
 #include "tools.h"
 #include "validate.h"
 #include "../transport.h"
-#include "../system.h"
+#include "../context.h"
 
 #include <vector>
 #include <unordered_map>
@@ -67,8 +67,10 @@ static const zypp::json::Object kFindDependentsSchema = {
 const zypp::json::Object & schema_find_dependents() { return kFindDependentsSchema; }
 
 // ─── Tool implementation ─────────────────────────────────────────────────────
-int tool_find_dependents( const zypp::json::Object & arg, McpTransport & t )
+int tool_find_dependents( const zypp::json::Object & arg, ToolContext & ctx )
 {
+    McpTransport & t = ctx.transport();
+
     // ── Validate arguments ────────────────────────────────────────────────────
     const std::string pkg      = validate::requireNonEmpty( arg, "package" );
     const std::string relation = validate::optionalEnum( arg, "relation",
@@ -78,15 +80,10 @@ int tool_find_dependents( const zypp::json::Object & arg, McpTransport & t )
     const std::string type     = validate::optionalEnum( arg, "type",
         { "package", "patch", "pattern", "product", "all" } );
 
-    const std::optional<zypp::Pathname> testcase =
-        arg.contains("testcase")
-            ? std::optional<zypp::Pathname>( validate::requireNonEmpty( arg, "testcase" ) )
-            : std::nullopt;
-
     const bool installedOnly = validate::optionalBool( arg, "installed_only" );
 
     // ── Load pool ─────────────────────────────────────────────────────────────
-    ZYpp::Ptr zypp = loadSystem( testcase );
+    ZYpp::Ptr zypp = ctx.loadSystemFromArg( arg );
 
     // Pre-compute all filters once.
     const sat::SolvAttr relAttr = relationToAttr( relation );

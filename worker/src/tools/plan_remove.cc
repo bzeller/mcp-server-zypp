@@ -2,7 +2,7 @@
 #include "tools.h"
 #include "validate.h"
 #include "../transport.h"
-#include "../system.h"
+#include "../context.h"
 
 #include <zypp/Resolver.h>
 #include <zypp-core/parser/json/JsonValue.h>
@@ -27,14 +27,10 @@ static const zypp::json::Object kPlanRemoveSchema = []{
 const zypp::json::Object & schema_plan_remove() { return kPlanRemoveSchema; }
 
 // ─── Tool implementation ─────────────────────────────────────────────────────
-int tool_plan_remove( const zypp::json::Object & arg, McpTransport & t )
+int tool_plan_remove( const zypp::json::Object & arg, ToolContext & ctx )
 {
-    const std::optional<zypp::Pathname> testcase =
-        arg.contains("testcase")
-            ? std::optional<zypp::Pathname>( validate::requireNonEmpty( arg, "testcase" ) )
-            : std::nullopt;
-
-    ZYpp::Ptr zypp = loadSystem( testcase );
+    McpTransport & t = ctx.transport();
+    ZYpp::Ptr zypp = ctx.loadSystemFromArg( arg );
 
     const auto res = setupRemove( arg, zypp, "plan_remove", t );
     if ( res == SetupRemoveResult::NotInstalled ) return 0;

@@ -2,7 +2,7 @@
 #include "tools.h"
 #include "validate.h"
 #include "../transport.h"
-#include "../system.h"
+#include "../context.h"
 
 #include <unistd.h>
 
@@ -40,15 +40,17 @@ static const zypp::json::Object kConfirmInstallSchema = []{
 const zypp::json::Object & schema_confirm_install() { return kConfirmInstallSchema; }
 
 // ─── Tool implementation ─────────────────────────────────────────────────────
-int tool_confirm_install( const zypp::json::Object & arg, McpTransport & t )
+int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
 {
+    McpTransport & t = ctx.transport();
+
     if ( geteuid() != 0 )
     {
         t.writeFrame( jsonError( "PERMISSION_DENIED", "confirm_install requires root privileges." ) );
         return 1;
     }
     // Always live system — no testcase parameter.
-    ZYpp::Ptr zypp = loadSystem( std::nullopt );
+    ZYpp::Ptr zypp = ctx.loadLiveSystem();
 
     if ( !setupInstall( arg, zypp, "confirm_install", t ) )
         return 1;

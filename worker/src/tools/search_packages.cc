@@ -1,7 +1,7 @@
 #include "tools.h"
 #include "validate.h"
 #include "../transport.h"
-#include "../system.h"
+#include "../context.h"
 
 #include <zypp/PoolQuery.h>
 #include <zypp/ResPool.h>
@@ -80,8 +80,10 @@ static const zypp::json::Object kSearchPackagesSchema = {
 const zypp::json::Object & schema_search_packages() { return kSearchPackagesSchema; }
 
 // ─── Tool implementation ─────────────────────────────────────────────────────
-int tool_search_packages( const zypp::json::Object & arg, McpTransport & t )
+int tool_search_packages( const zypp::json::Object & arg, ToolContext & ctx )
 {
+    McpTransport & t = ctx.transport();
+
     // ── Validate arguments ────────────────────────────────────────────────────
     const std::string pattern     = validate::requireNonEmpty( arg, "pattern" );
     const std::string match       = validate::optionalEnum( arg, "match",
@@ -101,13 +103,8 @@ int tool_search_packages( const zypp::json::Object & arg, McpTransport & t )
         ZYPP_THROW( zypp::Exception(
             "installed_only and not_installed_only are mutually exclusive." ) );
 
-    const std::optional<zypp::Pathname> testcase =
-        arg.contains("testcase")
-            ? std::optional<zypp::Pathname>( validate::requireNonEmpty( arg, "testcase" ) )
-            : std::nullopt;
-
     // ── Load pool ─────────────────────────────────────────────────────────────
-    ZYpp::Ptr zypp = loadSystem( testcase );
+    ZYpp::Ptr zypp = ctx.loadSystemFromArg( arg );
 
     // ── Build PoolQuery — mirroring zypper search setup ───────────────────────
     PoolQuery query;
