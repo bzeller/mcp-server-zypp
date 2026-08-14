@@ -1,0 +1,14 @@
+=Ver: 2.0
+##----------------------------------------
+=Pkg: pkg-upgrade-same 1 1 x86_64
++Prv:
+pkg-upgrade-same = 1-1
+-Prv:
+=Eul: License A.
+##----------------------------------------
+=Pkg: pkg-upgrade-diff 1 1 x86_64
++Prv:
+pkg-upgrade-diff = 1-1
+-Prv:
+=Eul: License A.
+##----------------------------------------

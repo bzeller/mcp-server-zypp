@@ -1,0 +1,36 @@
+version: 1.0
+setup:
+  # No "system:" key: @System is provided via "sources:" below instead, using
+  # a real susetags repo (loadRepo's Url branch) so installed packages can
+  # carry an =Eul: license — the Testtags format used by "system:" has no
+  # tag for that at all. Becoming "the" system repo is purely alias-driven
+  # (PoolImpl::_createRepo("@System") -> pool_set_installed), so this works
+  # regardless of which repo format loaded it.
+  sources:
+    - url: "testcase:sys-repo"
+      name: "@System"
+    - url: "testcase:avail-repo"
+      name: "avail"
+  arch: x86_64
+  locales:
+    - fate: ""
+      name: en_US
+  autoinst: []
+  modalias: []
+  multiversion: []
+  resolverFlags:
+    focus: Job
+    ignorealreadyrecommended: false
+    onlyRequires: false
+    forceResolve: false
+    cleandepsOnRemove: false
+    allowDowngrade: false
+    allowNameChange: false
+    allowArchChange: false
+    allowVendorChange: false
+    dupAllowDowngrade: false
+    dupAllowNameChange: false
+    dupAllowArchChange: false
+    dupAllowVendorChange: false
+  systemCheck: SystemCheck
+trials: []
