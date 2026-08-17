@@ -35,6 +35,7 @@ endif()
 set(WORKER_HEADERS
   src/transport.h
   src/context.h
+  src/gpgkeygate.h
   src/callbacks.h
   src/system.h
   src/tools/registry.h
@@ -46,6 +47,7 @@ set(WORKER_HEADERS
 set(WORKER_LIB_SOURCES
   src/transport.cc
   src/context.cc
+  src/gpgkeygate.cc
   src/callbacks.cc
   src/system.cc
   src/tools/transaction.cc
@@ -92,3 +94,15 @@ target_compile_definitions(zypp-mcp-tool-tests PRIVATE
   MCP_TEST_TESTDATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../tests/testdata")
 
 add_test(NAME mcp_worker_cpp_tests COMMAND zypp-mcp-tool-tests --catch_system_errors=no)
+
+# GpgKeyGate is deliberately free of libzypp types (see gpgkeygate.h) — built
+# as its own small executable, independent of zypp-mcp-tool-objlib, so this
+# test stays fast and buildable without the zypp toolchain.
+add_executable(zypp-mcp-gpgkeygate-tests
+  tests/gpgkeygate_test.cc
+  src/gpgkeygate.cc
+)
+target_link_libraries(zypp-mcp-gpgkeygate-tests PRIVATE Boost::unit_test_framework)
+target_compile_features(zypp-mcp-gpgkeygate-tests PRIVATE cxx_std_17)
+
+add_test(NAME mcp_gpgkeygate_tests COMMAND zypp-mcp-gpgkeygate-tests --catch_system_errors=no)
