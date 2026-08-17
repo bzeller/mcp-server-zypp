@@ -6,14 +6,22 @@
 #include <zypp/Digest.h>
 
 #include "transport.h"
+#include "gpgkeygate.h"
 
 // ─── KeyRing callback ────────────────────────────────────────────────────────
 /// Mirrors zypper/src/callbacks/keyring.h — each virtual override emits an
 /// elicitation frame and blocks on the proxy's stdin for the human answer.
 /// Default on any transport failure: fail closed (KEY_DONT_TRUST / false).
+///
+/// report() is the exception: KeyRing::askUserToAcceptPackageKey() (the
+/// per-package signing key trust decision made during commit) is non-virtual
+/// and communicates solely through ReportBase::report()'s UserData —
+/// overriding report() is the only available interception point. Rather than
+/// blocking on an elicitation like the other members here, this answers
+/// synchronously from the pre-supplied GpgKeyGate — see gpgkeygate.h.
 struct McpKeyRingReceive : public zypp::callback::ReceiveReport<zypp::KeyRingReport>
 {
-    explicit McpKeyRingReceive( McpTransport & t ) : _t( t ) {}
+    McpKeyRingReceive( McpTransport & t, GpgKeyGate & gate ) : _t( t ), _gate( gate ) {}
 
     zypp::KeyRingReport::KeyTrust askUserToAcceptKey(
         const zypp::PublicKey & key,
@@ -33,8 +41,11 @@ struct McpKeyRingReceive : public zypp::callback::ReceiveReport<zypp::KeyRingRep
         const zypp::PublicKey & key,
         const zypp::KeyContext & ctx ) override;
 
+    void report( const UserData & userData ) override;
+
 private:
     McpTransport & _t;
+    GpgKeyGate   & _gate;
 };
 
 // ─── Digest callback ─────────────────────────────────────────────────────────
@@ -153,7 +164,7 @@ private:
 class McpCallbackScope
 {
 public:
-    explicit McpCallbackScope( McpTransport & t );
+    McpCallbackScope( McpTransport & t, GpgKeyGate & gpgKeys );
     ~McpCallbackScope();
 
     McpCallbackScope( const McpCallbackScope & ) = delete;

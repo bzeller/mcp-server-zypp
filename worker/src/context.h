@@ -8,6 +8,7 @@
 #include <zypp-core/parser/json/JsonValue.h>
 
 #include "transport.h"
+#include "gpgkeygate.h"
 
 /// Per-invocation state, owned by main() for the lifetime of the process.
 ///
@@ -28,6 +29,7 @@ public:
     ToolContext & operator=( const ToolContext & ) = delete;
 
     McpTransport & transport() { return _transport; }
+    GpgKeyGate   & gpgKeys()   { return _gpgKeys; }
 
     /// Live system at "/". Cannot be redirected to a testcase — confirm_*
     /// depend on that being structurally impossible rather than merely
@@ -42,6 +44,7 @@ private:
     zypp::ZYpp::Ptr load( const std::optional<zypp::Pathname> & testcase );
 
     McpTransport    _transport;
+    GpgKeyGate      _gpgKeys;
     zypp::ZYpp::Ptr _zypp;   ///< lazily acquired on first load
 };
 

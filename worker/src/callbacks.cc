@@ -133,6 +133,36 @@ bool McpKeyRingReceive::askUserToAcceptVerificationFailed(
     return ans ? parseBoolAnswer( *ans ) : false;
 }
 
+// KeyRing::askUserToAcceptPackageKey() (per-package signing key trust,
+// asked during commit for every distinct key encountered) is non-virtual
+// and communicates solely through this generic report() with a
+// KeyRingReport::ACCEPT_PACKAGE_KEY_REQUEST-typed UserData — see
+// callbacks.h for why this is answered from GpgKeyGate rather than by
+// blocking on an elicitation like the members above.
+//
+// The other four askUserTo* members above fire during a different path
+// (repo metadata / generic signed-file verification, not RPM package
+// checks) and remain elicitation-based for now — a follow-up change will
+// revisit them.
+void McpKeyRingReceive::report( const UserData & userData )
+{
+    if ( userData.type() != zypp::ContentType( zypp::KeyRingReport::ACCEPT_PACKAGE_KEY_REQUEST ) )
+        return; // not a request this override answers — leave to the base default
+
+    zypp::PublicKey  key;
+    zypp::KeyContext ctx;
+    userData.get( "PublicKey",  key );
+    userData.get( "KeyContext", ctx );
+
+    const std::string repo = ctx.empty() ? std::string() : ctx.repoInfo().asUserString();
+
+    // TrustKey is unset at this point — UserData::set() on a const reference
+    // is only permitted for a currently-empty value (see UserData.h), so
+    // this always takes effect and is visible to the caller after report()
+    // returns (same underlying shared map, not a copy).
+    userData.set( "TrustKey", _gate.isAccepted( key.fingerprint(), key.name(), repo ) );
+}
+
 // ─── McpDigestReceive ────────────────────────────────────────────────────────
 bool McpDigestReceive::askUserToAcceptNoDigest( const zypp::Pathname & file )
 {
@@ -413,8 +443,8 @@ void McpCommitActiveReceive::reportend()
 }
 
 // ─── McpCallbackScope ────────────────────────────────────────────────────────
-McpCallbackScope::McpCallbackScope( McpTransport & t )
-    : _keyring( t ), _digest( t ), _install( t ), _remove( t ),
+McpCallbackScope::McpCallbackScope( McpTransport & t, GpgKeyGate & gpgKeys )
+    : _keyring( t, gpgKeys ), _digest( t ), _install( t ), _remove( t ),
       _download( t ), _preload( t ), _commitActive( t )
 {
     _keyring.connect();

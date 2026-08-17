@@ -129,7 +129,7 @@ int main( int argc, char ** argv )
     }
 
     // ─── Register callbacks for the lifetime of this process ─────────────────
-    McpCallbackScope callbacks( ctx.transport() );
+    McpCallbackScope callbacks( ctx.transport(), ctx.gpgKeys() );
 
     // ─── Dispatch via registry ───────────────────────────────────────────────
     // loadSystem() is called inside each tool (via ToolContext) — it acquires
