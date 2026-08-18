@@ -5,7 +5,7 @@
 #include <string>
 #include <vector>
 
-/// A package signing key encountered during commit that was not pre-accepted.
+/// A package signing key encountered during commit that was not trusted.
 struct RejectedKey
 {
     std::string fingerprint;
@@ -13,32 +13,35 @@ struct RejectedKey
     std::string repo;
 };
 
-/// Deny-by-default gate for package signing keys — the same two-phase
-/// token exchange used for licenses (see tools/transaction.h). A key is
-/// trusted only if its fingerprint is explicitly present in the accepted
-/// set; every other case (missing, empty set, unrecognised fingerprint)
-/// is rejected, never silently allowed through.
+/// Pre-approved package signing keys, plus a record of the keys that were
+/// not trusted and therefore blocked a commit.
 ///
-/// libzypp asks whether to trust a package signing key via
-/// KeyRing::askUserToAcceptPackageKey(), which must be answered synchronously
-/// and cannot be deferred. Rather than blocking on an interactive
-/// elicitation, confirm_install takes the fingerprints the caller already
-/// reviewed and answers from that set alone. A key not in the set is
-/// rejected and recorded, so the tool can report exactly what still needs
-/// confirming.
+/// Trust decisions are NOT made here — they go through MCP elicitation in
+/// McpKeyRingReceive (see callbacks.h). This class only answers "was this
+/// fingerprint approved up front?" and collects the ones that were refused,
+/// so the tool can report exactly which key(s) stopped the transaction.
 ///
-/// Deliberately free of libzypp types: plain decision logic, unit-tested as such.
+/// Nothing populates the accepted set today: a key is normally trusted by an
+/// explicit human answer to an elicitation prompt. The set exists so an
+/// operator-supplied source (config file, environment) can be added later
+/// without touching the callbacks — it is deliberately never filled from a
+/// tool argument the model controls.
+///
+/// Deliberately free of libzypp types: plain logic, unit-tested as such.
 class GpgKeyGate
 {
 public:
+    /// Replace the set of pre-approved fingerprints.
     void accept( const std::set<std::string> & fingerprints_r );
 
-    /// True if fingerprint_r was pre-accepted. On a miss the key is recorded
-    /// (deduplicated by fingerprint) and false is returned — never blocks,
-    /// never prompts.
-    bool isAccepted( const std::string & fingerprint_r,
-                     const std::string & name_r,
-                     const std::string & repo_r );
+    /// Whether fingerprint_r is pre-approved. Pure query — records nothing.
+    bool isAccepted( const std::string & fingerprint_r ) const;
+
+    /// Record a key that was not trusted. Deduplicated by fingerprint —
+    /// one key typically signs many packages.
+    void recordRejection( const std::string & fingerprint_r,
+                          const std::string & name_r,
+                          const std::string & repo_r );
 
     const std::vector<RejectedKey> & rejected() const { return _rejected; }
     bool hasRejections() const { return !_rejected.empty(); }

@@ -23,18 +23,16 @@ void GpgKeyGate::accept( const std::set<std::string> & fingerprints_r )
         _accepted.insert( normalize( fp ) );
 }
 
-bool GpgKeyGate::isAccepted( const std::string & fingerprint_r,
-                             const std::string & name_r,
-                             const std::string & repo_r )
-{
-    if ( _accepted.count( normalize( fingerprint_r ) ) )
-        return true;
+bool GpgKeyGate::isAccepted( const std::string & fingerprint_r ) const
+{ return _accepted.count( normalize( fingerprint_r ) ) != 0; }
 
+void GpgKeyGate::recordRejection( const std::string & fingerprint_r,
+                                  const std::string & name_r,
+                                  const std::string & repo_r )
+{
     // One key typically signs many packages — record it once.
     const auto seen = std::find_if( _rejected.begin(), _rejected.end(),
         [&]( const RejectedKey & r ){ return r.fingerprint == fingerprint_r; } );
     if ( seen == _rejected.end() )
         _rejected.push_back( { fingerprint_r, name_r, repo_r } );
-
-    return false;
 }
