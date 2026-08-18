@@ -43,14 +43,18 @@ zypp::KeyRingReport::KeyTrust McpKeyRingReceive::askUserToAcceptKey(
     const zypp::PublicKey & key,
     const zypp::KeyContext & ctx )
 {
+    const std::string repo = ctx.empty() ? std::string() : ctx.repoInfo().asUserString();
+    if ( _gate.isAccepted( key.fingerprint() ) )
+        return zypp::KeyRingReport::KEY_TRUST_AND_IMPORT;
+
     zypp::json::Object data = {
         { "fingerprint", key.fingerprint()      },
         { "name",        key.name()             },
         { "created",     key.created().asString() },
         { "expires",     key.expiresAsString()  }
     };
-    if ( !ctx.empty() )
-        data.add( "repo", ctx.repoInfo().asUserString() );
+    if ( !repo.empty() )
+        data.add( "repo", repo );
 
     _t.writeFrame( zypp::json::Object{ {
         { "type",   "elicitation" },
@@ -59,14 +63,17 @@ zypp::KeyRingReport::KeyTrust McpKeyRingReceive::askUserToAcceptKey(
     } }.asJSON() );
 
     auto ans = _t.readFrame();
-    if ( !ans )
-        return zypp::KeyRingReport::KEY_DONT_TRUST; // fail closed on EOF
+    const std::string answer = ans ? parseAnswer( *ans ) : std::string();
 
-    std::string answer = parseAnswer( *ans );
     if ( answer == "import" )
         return zypp::KeyRingReport::KEY_TRUST_AND_IMPORT;
     if ( answer == "trust" )
         return zypp::KeyRingReport::KEY_TRUST_TEMPORARILY;
+
+    // Declined, EOF, or a client without elicitation support (the proxy
+    // answers "decline" in that case) — deny, and record so the tool can
+    // report which key blocked the transaction.
+    _gate.recordRejection( key.fingerprint(), key.name(), repo );
     return zypp::KeyRingReport::KEY_DONT_TRUST;
 }
 
@@ -130,20 +137,18 @@ bool McpKeyRingReceive::askUserToAcceptVerificationFailed(
     } }.asJSON() );
 
     auto ans = _t.readFrame();
-    return ans ? parseBoolAnswer( *ans ) : false;
+    const bool accepted = ans ? parseBoolAnswer( *ans ) : false;
+    if ( !accepted )
+        _gate.recordRejection( key.fingerprint(), key.name(),
+                               ctx.empty() ? std::string() : ctx.repoInfo().asUserString() );
+    return accepted;
 }
 
-// KeyRing::askUserToAcceptPackageKey() (per-package signing key trust,
-// asked during commit for every distinct key encountered) is non-virtual
-// and communicates solely through this generic report() with a
-// KeyRingReport::ACCEPT_PACKAGE_KEY_REQUEST-typed UserData — see
-// callbacks.h for why this is answered from GpgKeyGate rather than by
-// blocking on an elicitation like the members above.
-//
-// The other four askUserTo* members above fire during a different path
-// (repo metadata / generic signed-file verification, not RPM package
-// checks) and remain elicitation-based for now — a follow-up change will
-// revisit them.
+// KeyRing::askUserToAcceptPackageKey() (per-package signing key trust, asked
+// during commit for every distinct key) is non-virtual and communicates
+// solely through this generic report() with an
+// ACCEPT_PACKAGE_KEY_REQUEST-typed UserData — overriding report() is the only
+// available interception point.
 void McpKeyRingReceive::report( const UserData & userData )
 {
     if ( userData.type() != zypp::ContentType( zypp::KeyRingReport::ACCEPT_PACKAGE_KEY_REQUEST ) )
@@ -156,11 +161,36 @@ void McpKeyRingReceive::report( const UserData & userData )
 
     const std::string repo = ctx.empty() ? std::string() : ctx.repoInfo().asUserString();
 
+    if ( _gate.isAccepted( key.fingerprint() ) )
+    {
+        userData.set( "TrustKey", true );
+        return;
+    }
+
+    zypp::json::Object data = {
+        { "fingerprint", key.fingerprint() },
+        { "name",        key.name()        }
+    };
+    if ( !repo.empty() )
+        data.add( "repo", repo );
+
+    _t.writeFrame( zypp::json::Object{ {
+        { "type",   "elicitation"       },
+        { "method", "trust_package_key" },
+        { "data",   std::move(data)     }
+    } }.asJSON() );
+
+    auto ans = _t.readFrame();
+    const bool trust = ans ? parseBoolAnswer( *ans ) : false;
+
+    if ( !trust )
+        _gate.recordRejection( key.fingerprint(), key.name(), repo );
+
     // TrustKey is unset at this point — UserData::set() on a const reference
-    // is only permitted for a currently-empty value (see UserData.h), so
-    // this always takes effect and is visible to the caller after report()
-    // returns (same underlying shared map, not a copy).
-    userData.set( "TrustKey", _gate.isAccepted( key.fingerprint(), key.name(), repo ) );
+    // is only permitted for a currently-empty value (see UserData.h), so this
+    // always takes effect and is visible to the caller after report() returns
+    // (same underlying shared map, not a copy).
+    userData.set( "TrustKey", trust );
 }
 
 // ─── McpDigestReceive ────────────────────────────────────────────────────────

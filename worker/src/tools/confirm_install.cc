@@ -15,13 +15,9 @@ using namespace zypp;
 
 // ─── Schema ──────────────────────────────────────────────────────────────────
 // Identical args to plan_install minus testcase — confirm always hits the live
-// system — plus accepted_licenses/accepted_keys, needed only at confirm time.
-// See transaction.h: checkLicensesAccepted for the license_id values expected
-// here, which plan_install's "licenses" array already surfaces. There is no
-// equivalent pre-listing for accepted_keys: a package's signing key is only
-// known once its file is downloaded during commit (see gpgkeygate.h), so
-// the first attempt may need a retry with the fingerprint(s) named in a
-// KEY_CONFIRMATION_REQUIRED error.
+// system — plus accepted_licenses, needed only at confirm time. See
+// transaction.h: checkLicensesAccepted for the license_id values expected
+// here, which plan_install's "licenses" array already surfaces.
 static const zypp::json::Object kConfirmInstallSchema = []{
     auto props = installSchemaProperties();
     props.add( "accepted_licenses", zypp::json::Object{ {
@@ -32,16 +28,6 @@ static const zypp::json::Object kConfirmInstallSchema = []{
                           "accepted. Any license still requiring confirmation "
                           "that is not listed here aborts with "
                           "LICENSE_CONFIRMATION_REQUIRED." },
-        { "default",     zypp::json::Array{} }
-    } } );
-    props.add( "accepted_keys", zypp::json::Object{ {
-        { "type",        "array" },
-        { "items",       zypp::json::Object{ { { "type", "string" } } } },
-        { "description", "GPG key fingerprints that have been reviewed and "
-                          "accepted as trusted for signing packages in this "
-                          "transaction. A package signed by a key not listed "
-                          "here aborts with KEY_CONFIRMATION_REQUIRED, which "
-                          "reports the fingerprint to confirm." },
         { "default",     zypp::json::Array{} }
     } } );
     return zypp::json::Object{ {
@@ -82,11 +68,6 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
     if ( !checkLicensesAccepted( zypp->pool(), acceptedLicenses, "confirm_install", t ) )
         return 1;
 
-    // Unlike licenses, a package's signing key is only known once its file
-    // is downloaded during commit() — there is nothing to check upfront.
-    // See gpgkeygate.h.
-    ctx.gpgKeys().accept( validate::optionalStringSet( arg, "accepted_keys" ) );
-
     auto writeKeyError = [&]{
         zypp::json::Array keys;
         for ( const auto & k : ctx.gpgKeys().rejected() )
@@ -96,13 +77,14 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
                 { "repo",        k.repo        }
             } } );
         t.writeFrame( zypp::json::Object{ {
-            { "type",   "error"                        },
-            { "code",   "KEY_CONFIRMATION_REQUIRED"     },
-            { "tool",   "confirm_install"               },
-            { "detail", "One or more packages are signed by a key that has "
-                        "not been accepted. Review the key(s) below and "
-                        "retry with accepted_keys containing the listed "
-                        "fingerprint(s)." },
+            { "type",   "error"            },
+            { "code",   "KEY_NOT_TRUSTED"  },
+            { "tool",   "confirm_install"  },
+            { "detail", "One or more packages are signed by a key that was "
+                        "not trusted, so the transaction was aborted. The "
+                        "key(s) below must be reviewed and trusted on the "
+                        "system before this install can proceed; this cannot "
+                        "be overridden by a tool argument." },
             { "keys",   std::move(keys) }
         } }.asJSON() );
     };
