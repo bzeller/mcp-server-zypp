@@ -1,0 +1,196 @@
+"""
+License confirmation gate — confirm_install's accepted_licenses argument
+(unlike GPG keys, this really is a plain tool argument, not elicitation —
+see worker/src/tools/transaction.h: checkLicensesAccepted). Verifies end to
+end against a real hand-crafted susetags repo (chosen over rpm-md/
+createrepo_c specifically because a real RPM's EULA/license attribute
+(SolvAttr::eula) is populated from a repo metadata <eula> tag that
+createrepo_c does not generate from a plain RPM — susetags supports it as
+a plain, hand-authorable =Eul: tag instead, with no XML/checksum
+regeneration involved):
+
+  1. No accepted_licenses on a fresh install — must require confirmation,
+     reporting the exact license text and a license_id.
+  2. That license_id supplied — must install.
+  3. Upgrading an already-installed package to a version with IDENTICAL
+     license text — must proceed without requiring re-confirmation at all
+     (mirrors zypper's own confirm_licenses behaviour, bnc#394396; already
+     covered by a C++ unit test against a testcase — this exercises the
+     same behaviour against a real, live rpm database).
+
+The package is left completely unsigned and gpgcheck disabled — this
+scenario is deliberately independent of GPG key handling (see
+scenarios/gpg_key.py for that).
+"""
+import hashlib
+import json
+from pathlib import Path
+
+from e2e_common import E2E_DIR, call_tool, fail, run, step
+
+SPEC = E2E_DIR / "license-test-package.spec"
+RPMBUILD_TOPDIR = Path("/tmp/rpmbuild-license")
+REPO_DIR = Path("/repo-license")
+DESCR_DIR = REPO_DIR / "suse" / "setup" / "descr"
+NOARCH_DIR = REPO_DIR / "suse" / "noarch"
+
+LICENSE_TEXT = "You must agree to this license before installing."
+
+FRESH_PKG = "license-fresh-pkg"
+UPGRADE_PKG = "license-upgrade-pkg"
+
+
+def build_rpm(name: str, version: str) -> Path:
+    RPMBUILD_TOPDIR.mkdir(parents=True, exist_ok=True)
+    run(["rpmbuild", "-bb", str(SPEC), "--define", f"_topdir {RPMBUILD_TOPDIR}",
+         "--define", f"pkg_name {name}", "--define", f"pkg_version {version}"])
+    matches = list(RPMBUILD_TOPDIR.glob(f"RPMS/**/{name}-{version}-1.*.rpm"))
+    if not matches:
+        fail(f"rpmbuild did not produce an RPM for {name}-{version}")
+    return matches[0]
+
+
+def susetags_packages_text(entries: list) -> str:
+    lines = ["=Ver: 2.0"]
+    for e in entries:
+        lines.append("##----------------------------------------")
+        lines.append(f"=Pkg: {e['name']} {e['version']} 1 noarch")
+        lines.append("+Prv:")
+        lines.append(f"{e['name']} = {e['version']}-1")
+        lines.append("-Prv:")
+        lines.append(f"=Eul: {e['license']}")
+        lines.append(f"=Loc: 1 {e['rpm_path'].name}")
+    lines.append("##----------------------------------------")
+    return "\n".join(lines) + "\n"
+
+
+def write_repo(entries: list):
+    """(Re)writes the susetags metadata and copies the given RPMs into
+    place — DATADIR/arch/filename (here: suse/noarch/<file>), per
+    Solvable::lookupLocation()'s YAST2 resolution. Called twice: once for
+    the initial state (fresh-install package + upgrade package v1), once
+    after the upgrade target version becomes available. Each call fully
+    replaces the package list — only entries explicitly passed remain
+    available. Unlike a plain upgrade resolve (which only needs the new
+    version listed), scenario 3 below specifically needs the OLD NEVRA to
+    remain listed too: collectLicensesToConfirm's upgrade-suppression
+    looks up an exact-NEVRA "available" twin of the installed item to read
+    its license text (a real installed/RPMDB item never carries one —
+    rpmdb2solv doesn't extract SOLVABLE_EULA from the RPM header at all),
+    mirroring zypper's own report_licenses()'s identical(api, inst)
+    technique. If the old version isn't still published anywhere, there is
+    no twin to consult and the gate safely falls back to requiring
+    re-confirmation — see the second write_repo() call below.
+    """
+    DESCR_DIR.mkdir(parents=True, exist_ok=True)
+    NOARCH_DIR.mkdir(parents=True, exist_ok=True)
+    for e in entries:
+        run(["cp", str(e["rpm_path"]), str(NOARCH_DIR / e["rpm_path"].name)])
+
+    packages_file = DESCR_DIR / "packages"
+    packages_file.write_text(susetags_packages_text(entries))
+
+    sha1 = hashlib.sha1(packages_file.read_bytes()).hexdigest()
+    (REPO_DIR / "content").write_text(
+        "DATADIR suse\n"
+        f"META SHA1 {sha1}  packages\n"
+    )
+
+    media_dir = REPO_DIR / "media.1"
+    media_dir.mkdir(exist_ok=True)
+    (media_dir / "media").write_text("mcp-test\n20250101000000\n1\n")
+
+
+def check_license_confirmation_required(result: dict) -> str:
+    """Returns the license_id that must be re-supplied to proceed."""
+    print(json.dumps(result, indent=2))
+    if result.get("code") != "LICENSE_CONFIRMATION_REQUIRED":
+        fail(f"expected LICENSE_CONFIRMATION_REQUIRED, got {result.get('code')!r}")
+    licenses = result.get("licenses", [])
+    if len(licenses) != 1:
+        fail(f"expected exactly one pending license, got {licenses}")
+    if licenses[0].get("text") != LICENSE_TEXT:
+        fail(f"unexpected license text: {licenses[0].get('text')!r}")
+    print("PASS: correctly required license confirmation")
+    return licenses[0]["license_id"]
+
+
+def run_scenario():
+    step("Build the fresh-install and upgrade test RPMs")
+    fresh_rpm = build_rpm(FRESH_PKG, "1.0")
+    upgrade_v1_rpm = build_rpm(UPGRADE_PKG, "1.0")
+    upgrade_v2_rpm = build_rpm(UPGRADE_PKG, "2.0")
+
+    step("Serve an initial repo: fresh-install package + upgrade package v1")
+    write_repo([
+        {"name": FRESH_PKG, "version": "1.0", "license": LICENSE_TEXT, "rpm_path": fresh_rpm},
+        {"name": UPGRADE_PKG, "version": "1.0", "license": LICENSE_TEXT, "rpm_path": upgrade_v1_rpm},
+    ])
+    # Unsigned and gpgcheck off entirely — this scenario is deliberately
+    # independent of GPG key handling. An unsigned package with
+    # pkgGpgCheckIsMandatory()==false is silently accepted by
+    # packageSigCheck() (CHK_NOSIG relaxed to CHK_OK) — no elicitation,
+    # no abort, regardless of signing.
+    run(["zypper", "--non-interactive", "addrepo", "--no-gpgcheck",
+         str(REPO_DIR), "license-test-repo"])
+    run(["zypper", "--non-interactive", "refresh"])
+
+    step("Scenario 1: no accepted_licenses — must require confirmation")
+    result = call_tool(
+        "confirm_install", {"package": FRESH_PKG, "repo": "license-test-repo"},
+        log_tag="license-1",
+    )
+    license_id = check_license_confirmation_required(result)
+
+    step("Scenario 2: accepted_licenses supplied — must install")
+    result = call_tool(
+        "confirm_install",
+        {"package": FRESH_PKG, "repo": "license-test-repo",
+         "accepted_licenses": [license_id]},
+        log_tag="license-2",
+    )
+    print(json.dumps(result, indent=2))
+    if result.get("type") != "result":
+        fail(f"expected a result frame, got {result}")
+    run(["rpm", "-q", FRESH_PKG])
+    print("PASS: accepted and installed")
+
+    step("Install upgrade package v1 (setup for scenario 3)")
+    # Same LICENSE_TEXT as scenario 1/2 means the identical license_id —
+    # license_id is computed purely from the text (see
+    # tools/transaction.cc: licenseId()), not tied to any one package.
+    result = call_tool(
+        "confirm_install",
+        {"package": UPGRADE_PKG, "repo": "license-test-repo",
+         "accepted_licenses": [license_id]},
+        log_tag="license-3-setup",
+    )
+    if result.get("type") != "result":
+        fail(f"setup: expected a result frame installing {UPGRADE_PKG} v1, got {result}")
+    run(["rpm", "-q", f"{UPGRADE_PKG}-1.0"])
+
+    step("Make upgrade package v2 available (identical license text), "
+         "keeping v1 published too")
+    # v1 must stay listed: the upgrade-suppression fix locates the
+    # installed item's exact-NEVRA twin among *available* solvables to
+    # recover its license text, since the true installed/RPMDB item never
+    # carries one. Dropping v1 here would leave no twin to find, and the
+    # gate would correctly (safely) fall back to requiring confirmation.
+    write_repo([
+        {"name": UPGRADE_PKG, "version": "1.0", "license": LICENSE_TEXT, "rpm_path": upgrade_v1_rpm},
+        {"name": UPGRADE_PKG, "version": "2.0", "license": LICENSE_TEXT, "rpm_path": upgrade_v2_rpm},
+    ])
+    run(["zypper", "--non-interactive", "refresh"])
+
+    step("Scenario 3: upgrade with identical license text — must NOT "
+         "require re-confirmation")
+    result = call_tool(
+        "confirm_install",
+        {"package": UPGRADE_PKG, "repo": "license-test-repo"},
+        log_tag="license-3",
+    )
+    print(json.dumps(result, indent=2))
+    if result.get("type") != "result":
+        fail(f"expected a result frame (no license gate), got {result}")
+    run(["rpm", "-q", f"{UPGRADE_PKG}-2.0"])
+    print("PASS: identical-license upgrade proceeded without re-confirmation")
