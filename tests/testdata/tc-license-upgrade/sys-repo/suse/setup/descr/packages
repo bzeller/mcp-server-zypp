@@ -12,3 +12,18 @@ pkg-upgrade-diff = 1-1
 -Prv:
 =Eul: License A.
 ##----------------------------------------
+=Pkg: pkg-twin-same 1 1 x86_64
++Prv:
+pkg-twin-same = 1-1
+-Prv:
+##----------------------------------------
+=Pkg: pkg-twin-diff 1 1 x86_64
++Prv:
+pkg-twin-diff = 1-1
+-Prv:
+##----------------------------------------
+=Pkg: pkg-twin-missing 1 1 x86_64
++Prv:
+pkg-twin-missing = 1-1
+-Prv:
+##----------------------------------------

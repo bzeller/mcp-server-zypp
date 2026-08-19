@@ -154,3 +154,57 @@ BOOST_FIXTURE_TEST_CASE( upgrade_with_changed_license_requires_confirmation, Res
 
     BOOST_CHECK( !checkLicensesAccepted( pool, {}, "test", t ) );
 }
+
+// The three cases below exercise collectLicensesToConfirm()'s exact-NEVRA
+// "available twin" lookup directly (see transaction.cc) — the fix for the
+// real-world gap where a truly-installed/RPMDB item never carries
+// SOLVABLE_EULA at all. pkg-twin-* in tc-license-upgrade's sys-repo
+// deliberately has no =Eul: line whatsoever on the installed side, mirroring
+// a real rpmdb2solv-produced solvable, unlike pkg-upgrade-same/diff above
+// (which carry a directly-readable installed =Eul: and so never exercise
+// the twin lookup — that fallback path only triggers when a twin exists).
+
+BOOST_FIXTURE_TEST_CASE( upgrade_twin_with_identical_license_is_suppressed, ResetPoolFixture )
+{
+    McpTransport t;
+    // Installed v1 has no license text of its own; v1 is also still
+    // published in "avail" with identical text to the v2 upgrade target —
+    // the twin lookup must find it and correctly suppress re-confirmation.
+    const zypp::ResPool pool = resolvedUpgradePool( t, "pkg-twin-same" );
+
+    BOOST_CHECK( collectLicensesToConfirm( pool ).empty() );
+    BOOST_CHECK( checkLicensesAccepted( pool, {}, "test", t ) );
+}
+
+BOOST_FIXTURE_TEST_CASE( upgrade_twin_with_changed_license_requires_confirmation, ResetPoolFixture )
+{
+    McpTransport t;
+    // Same as above, but v1's twin text ("License A.") differs from v2's
+    // ("License B.") — must still require confirmation.
+    const zypp::ResPool pool = resolvedUpgradePool( t, "pkg-twin-diff" );
+
+    const auto groups = collectLicensesToConfirm( pool );
+    BOOST_REQUIRE_EQUAL( groups.size(), 1u );
+
+    const auto & group = groups.begin()->second;
+    BOOST_CHECK_EQUAL( group.text, "License B." );
+    BOOST_REQUIRE_EQUAL( group.packages.size(), 1u );
+    BOOST_CHECK_EQUAL( group.packages[0], "pkg-twin-diff" );
+
+    BOOST_CHECK( !checkLicensesAccepted( pool, {}, "test", t ) );
+}
+
+BOOST_FIXTURE_TEST_CASE( upgrade_twin_missing_falls_back_to_requiring_confirmation, ResetPoolFixture )
+{
+    McpTransport t;
+    // Installed v1 has no license text of its own, and "avail" no longer
+    // publishes v1 at all (only v2) — no twin to consult. Must safely fall
+    // back to requiring confirmation rather than risk a false suppression.
+    const zypp::ResPool pool = resolvedUpgradePool( t, "pkg-twin-missing" );
+
+    const auto groups = collectLicensesToConfirm( pool );
+    BOOST_REQUIRE_EQUAL( groups.size(), 1u );
+    BOOST_CHECK_EQUAL( groups.begin()->second.text, "License A." );
+
+    BOOST_CHECK( !checkLicensesAccepted( pool, {}, "test", t ) );
+}

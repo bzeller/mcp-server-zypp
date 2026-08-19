@@ -345,18 +345,37 @@ std::map<std::string, LicenseGroup> collectLicensesToConfirm( const ResPool & po
         const std::string text = pi.satSolvable().licenseToConfirm();
         if ( text.empty() )                             continue;
 
-        // Mirrors zypper's misc.cc::confirm_licenses (bnc#394396): if this is
-        // an upgrade and every currently installed version of this package
-        // carries the identical license text, the user already agreed to it
-        // — don't ask again. Only a change in license text (or a fresh
-        // install with no installed version at all) requires confirmation.
+        // Mirrors zypper's misc.cc::confirm_licenses (bnc#394396), fixed: a
+        // truly-installed (RPMDB-derived) solvable never actually carries a
+        // SOLVABLE_EULA attribute — rpmdb2solv doesn't extract one from the
+        // RPM header, for any resolvable kind — so upstream's direct
+        // inst->licenseToConfirm() comparison against the installed item is
+        // unconditionally "" and can never detect "unchanged", making the
+        // whole suppression dead code in practice (see bug report). To make
+        // it actually work, look for an exact-NEVRA "available" twin of the
+        // installed item — the same technique zypper's own report_licenses()
+        // uses to solve the identical problem — and prefer its license text,
+        // the best obtainable proxy for "what the user was shown when this
+        // exact build was originally installed". Falls back to the
+        // installed item's own (normally empty) text if no such twin is
+        // currently published in any configured repo, which safely
+        // degrades to "always confirm" rather than risking a false skip.
         ui::Selectable::Ptr selectable = pool.proxy().lookup( pi.kind(), pi.name() );
         if ( selectable && selectable->hasInstalledObj() )
         {
             bool differs = false;
             for ( auto inst = selectable->installedBegin(); inst != selectable->installedEnd(); ++inst )
             {
-                if ( inst->resolvable()->licenseToConfirm() != text )
+                std::string instLicense = inst->satSolvable().licenseToConfirm();
+                for ( auto avail = selectable->availableBegin(); avail != selectable->availableEnd(); ++avail )
+                {
+                    if ( avail->satSolvable().sameNVRA( inst->satSolvable() ) )
+                    {
+                        instLicense = avail->satSolvable().licenseToConfirm();
+                        break;
+                    }
+                }
+                if ( instLicense != text )
                 {
                     differs = true;
                     break;
