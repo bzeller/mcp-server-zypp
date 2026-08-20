@@ -37,6 +37,7 @@ set(WORKER_HEADERS
   src/context.h
   src/gpgkeygate.h
   src/callbacks.h
+  src/cancellation.h
   src/system.h
   src/tools/registry.h
   src/tools/tools.h
@@ -49,6 +50,7 @@ set(WORKER_LIB_SOURCES
   src/context.cc
   src/gpgkeygate.cc
   src/callbacks.cc
+  src/cancellation.cc
   src/system.cc
   src/tools/transaction.cc
   src/tools/search_packages.cc

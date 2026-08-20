@@ -147,6 +147,15 @@ private:
 /// Returning false (on a missing/malformed/declining ack, or on EOF —
 /// e.g. the proxy died) aborts the commit before anything has been
 /// touched, rather than proceeding uncontrolled.
+///
+/// On a genuine proceed (true), start() also latches a process-local
+/// "point of no return" flag (see callbacks.cc: pastPointOfNoReturn())
+/// that McpDownloadReceive/McpCommitPreloadReceive's progress() check
+/// before honoring a SIGTERM-driven cancellation — those callbacks are not
+/// guaranteed to fire only before this point (see their definitions), so
+/// this flag, not the proxy handshake alone, is what keeps the "cannot be
+/// interrupted once the transaction begins" promise (main.cc's registry
+/// descriptions) regardless of which download mode a given commit() uses.
 struct McpCommitActiveReceive
     : public zypp::callback::ReceiveReport<zypp::target::CommitActiveReport>
 {

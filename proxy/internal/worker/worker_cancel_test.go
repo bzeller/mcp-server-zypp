@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"io"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -27,20 +26,59 @@ func (nopWriteCloser) Close() error { return nil }
 // none of the cancellation tests below use elicitation.
 func discardStdin() io.WriteCloser { return nopWriteCloser{io.Discard} }
 
-// TestInvokeIO_KillsOnCancelBeforeLatch verifies that ctx cancellation kills
-// the worker when no "zypp_control"/"commit_active" frame has been seen yet —
-// the default, cancellable state.
-func TestInvokeIO_KillsOnCancelBeforeLatch(t *testing.T) {
+// fakeKiller records Terminate/Kill calls for assertions, without touching
+// any real process. Safe for concurrent use — invokeIO's watcher goroutine
+// and the test's assertions run concurrently.
+type fakeKiller struct {
+	mu         sync.Mutex
+	terminated bool
+	killed     bool
+}
+
+func (f *fakeKiller) Terminate() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.terminated = true
+	return nil
+}
+
+func (f *fakeKiller) Kill() error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.killed = true
+	return nil
+}
+
+func (f *fakeKiller) wasTerminated() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.terminated
+}
+
+func (f *fakeKiller) wasKilled() bool {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return f.killed
+}
+
+// testGracePeriod is short so tests run quickly and deterministically —
+// production uses gracefulKillGracePeriod (5s).
+const testGracePeriod = 80 * time.Millisecond
+
+// TestInvokeIO_TerminatesOnCancelBeforeLatch verifies that ctx cancellation
+// sends SIGTERM (Terminate) when no "zypp_control"/"commit_active" frame has
+// been seen yet — the default, cancellable state — and that SIGKILL (Kill)
+// is not needed when the worker exits promptly afterward.
+func TestInvokeIO_TerminatesOnCancelBeforeLatch(t *testing.T) {
 	pr, pw := io.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 
-	var killed atomic.Bool
-	kill := func() { killed.Store(true) }
+	k := &fakeKiller{}
 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		invokeIO(ctx, discardStdin(), pr, kill, nil)
+		invokeIO(ctx, discardStdin(), pr, k, testGracePeriod, nil)
 	}()
 
 	// Write a plain progress frame — still cancellable.
@@ -48,8 +86,9 @@ func TestInvokeIO_KillsOnCancelBeforeLatch(t *testing.T) {
 		t.Fatalf("writeFrame: %v", err)
 	}
 
-	// Cancel before any latch frame arrives, then simulate the process dying
-	// as a real kill would cause (pipe closes, readFrame hits EOF).
+	// Cancel before any latch frame arrives, then simulate the process
+	// exiting promptly in response to SIGTERM (pipe closes, readFrame hits
+	// EOF) — well within the grace period.
 	cancel()
 	pw.Close()
 
@@ -59,30 +98,78 @@ func TestInvokeIO_KillsOnCancelBeforeLatch(t *testing.T) {
 		t.Fatal("invokeIO did not return after cancellation")
 	}
 
-	if !killed.Load() {
-		t.Error("expected kill to be called when cancelled before commit_active latch")
+	if !k.wasTerminated() {
+		t.Error("expected Terminate to be called when cancelled before commit_active latch")
+	}
+	if k.wasKilled() {
+		t.Error("Kill should not be called when the worker exits within the grace period")
+	}
+}
+
+// TestInvokeIO_EscalatesToKillIfWorkerDoesNotExit verifies that a worker
+// which does not exit within the grace period after SIGTERM is escalated to
+// SIGKILL — the liveness backstop.
+func TestInvokeIO_EscalatesToKillIfWorkerDoesNotExit(t *testing.T) {
+	pr, pw := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+
+	k := &fakeKiller{}
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		invokeIO(ctx, discardStdin(), pr, k, testGracePeriod, nil)
+	}()
+
+	if err := writeFrame(pw, []byte(`{"type":"progress","action":"download","percent":10}`)); err != nil {
+		t.Fatalf("writeFrame: %v", err)
+	}
+
+	// Cancel but do NOT close the pipe — simulates a worker that does not
+	// respond to SIGTERM (e.g. wedged before ever reaching a poll point).
+	cancel()
+
+	// Wait comfortably past the grace period, then assert escalation.
+	time.Sleep(testGracePeriod * 3)
+	if !k.wasTerminated() {
+		t.Error("expected Terminate to be called")
+	}
+	if !k.wasKilled() {
+		t.Error("expected Kill to be called after the worker failed to exit within the grace period")
+	}
+
+	// Let invokeIO actually return so the test doesn't leak goroutines —
+	// simulates the (real) SIGKILL finally taking effect.
+	pw.Close()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("invokeIO did not return after simulated SIGKILL")
 	}
 }
 
 // TestInvokeIO_DoesNotKillAfterLatch verifies that once a "zypp_control"/
-// "commit_active" frame is seen, a later ctx cancellation does not invoke
-// kill — the worker must run to completion (RPM transaction safety).
+// "commit_active" frame has been latched (proceed), a later ctx cancellation
+// invokes neither Terminate nor Kill — the worker must run to completion
+// (RPM transaction safety). This is the primary safety check: the decision
+// not to touch the process at all is made *before* Terminate is ever
+// called, at the very first stillCancellable read in the watcher goroutine.
 func TestInvokeIO_DoesNotKillAfterLatch(t *testing.T) {
 	pr, pw := io.Pipe()
 	ctx, cancel := context.WithCancel(context.Background())
 
-	var killed atomic.Bool
-	kill := func() { killed.Store(true) }
+	k := &fakeKiller{}
 
 	var result *Result
 	var resultErr error
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		result, resultErr = invokeIO(ctx, discardStdin(), pr, kill, nil)
+		result, resultErr = invokeIO(ctx, discardStdin(), pr, k, testGracePeriod, nil)
 	}()
 
-	// Latches non-cancellable — simulates McpCommitActiveReceive::start().
+	// Latches non-cancellable — simulates McpCommitActiveReceive::start()
+	// succeeding (ctx not yet cancelled at the time this frame is processed).
 	if err := writeFrame(pw, []byte(`{"type":"zypp_control","event":"commit_active"}`)); err != nil {
 		t.Fatalf("writeFrame: %v", err)
 	}
@@ -91,11 +178,14 @@ func TestInvokeIO_DoesNotKillAfterLatch(t *testing.T) {
 	time.Sleep(50 * time.Millisecond)
 	cancel()
 
-	// Cancellation must not have killed anything — worker keeps running and
-	// eventually produces a normal result.
-	time.Sleep(50 * time.Millisecond)
-	if killed.Load() {
-		t.Fatal("kill was called after commit_active latch — must never happen")
+	// Wait past the grace period — neither Terminate nor Kill must ever
+	// fire, at any point, regardless of how long ctx stays cancelled.
+	time.Sleep(testGracePeriod * 2)
+	if k.wasTerminated() {
+		t.Fatal("Terminate was called after commit_active latch — must never happen")
+	}
+	if k.wasKilled() {
+		t.Fatal("Kill was called after commit_active latch — must never happen")
 	}
 
 	if err := writeFrame(pw, []byte(`{"type":"result","tool":"confirm_install"}`)); err != nil {
@@ -109,8 +199,8 @@ func TestInvokeIO_DoesNotKillAfterLatch(t *testing.T) {
 		t.Fatal("invokeIO did not return after result frame")
 	}
 
-	if killed.Load() {
-		t.Error("kill must not have been called at any point after latch")
+	if k.wasTerminated() || k.wasKilled() {
+		t.Error("neither Terminate nor Kill must have been called at any point after latch")
 	}
 	if resultErr != nil {
 		t.Fatalf("unexpected error: %v", resultErr)
@@ -120,20 +210,39 @@ func TestInvokeIO_DoesNotKillAfterLatch(t *testing.T) {
 	}
 }
 
+// Note on the grace-period re-check in invokeIO's watcher goroutine: after
+// Terminate() and the grace-period wait, it re-reads stillCancellable
+// before ever calling Kill(), specifically so SIGKILL cannot land once the
+// transaction may have started, even if some future change altered how
+// long the commit_active ack round-trip takes. Under the *current* design
+// this second read can never actually observe a different value than the
+// first (stillCancellable can only transition to false via the frame
+// loop's own ctx.Err()==nil check — and ctx.Err() becomes permanently
+// non-nil in the same atomic step that closes ctx.Done(), which is what
+// wakes this watcher goroutine up in the first place; so if the first read
+// already observed cancellation, the frame loop can never subsequently see
+// "not yet cancelled" either). That makes the branch unreachable today —
+// intentionally kept anyway as a local, cheap invariant rather than an
+// assumption resting on the ack-decision logic elsewhere in this file
+// never changing. Not exercised by a dedicated test here since doing so
+// would require asserting behavior that cannot currently occur; the four
+// tests above cover every state actually reachable through invokeIO's
+// public timing.
+
 // TestInvokeIO_NoCancellationNoKill verifies the baseline: without any
-// cancellation, kill is never invoked regardless of latch state.
+// cancellation, neither Terminate nor Kill is invoked regardless of latch
+// state.
 func TestInvokeIO_NoCancellationNoKill(t *testing.T) {
 	pr, pw := io.Pipe()
 	ctx := context.Background()
 
-	var killed atomic.Bool
-	kill := func() { killed.Store(true) }
+	k := &fakeKiller{}
 
 	var result *Result
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		result, _ = invokeIO(ctx, discardStdin(), pr, kill, nil)
+		result, _ = invokeIO(ctx, discardStdin(), pr, k, testGracePeriod, nil)
 	}()
 
 	if err := writeFrame(pw, []byte(`{"type":"zypp_control","event":"commit_active"}`)); err != nil {
@@ -150,8 +259,8 @@ func TestInvokeIO_NoCancellationNoKill(t *testing.T) {
 		t.Fatal("invokeIO did not return")
 	}
 
-	if killed.Load() {
-		t.Error("kill must not be called without cancellation")
+	if k.wasTerminated() || k.wasKilled() {
+		t.Error("neither Terminate nor Kill must be called without cancellation")
 	}
 	if result == nil || result.Type != "result" {
 		t.Fatalf("expected result frame, got %+v", result)
@@ -184,7 +293,7 @@ func TestInvokeIO_CommitActiveAckWritten(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		invokeIO(ctx, stdinW, pr, func() {}, nil)
+		invokeIO(ctx, stdinW, pr, &fakeKiller{}, testGracePeriod, nil)
 	}()
 
 	if err := writeFrame(pw, []byte(`{"type":"zypp_control","event":"commit_active"}`)); err != nil {
@@ -220,7 +329,7 @@ func TestInvokeIO_CommitActiveAckWritten(t *testing.T) {
 // ctx is already cancelled by the time the "commit_active" frame arrives,
 // the proxy replies ack:false (graceful decline) rather than ack:true —
 // letting the worker unwind cleanly via TargetAbortedException instead of
-// relying solely on a racing kill().
+// relying solely on a racing Kill().
 func TestInvokeIO_CommitActiveDeclinesWhenAlreadyCancelled(t *testing.T) {
 	pr, pw := io.Pipe()
 	stdinR, stdinW := io.Pipe()
@@ -241,12 +350,12 @@ func TestInvokeIO_CommitActiveDeclinesWhenAlreadyCancelled(t *testing.T) {
 		mu.Unlock()
 	}()
 
-	// kill is a no-op here — this test only asserts the ack content, not
-	// the watcher-goroutine kill path (covered separately).
+	// A no-op killer — this test only asserts the ack content, not the
+	// watcher-goroutine Terminate/Kill path (covered separately above).
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		invokeIO(ctx, stdinW, pr, func() {}, nil)
+		invokeIO(ctx, stdinW, pr, &fakeKiller{}, testGracePeriod, nil)
 	}()
 
 	if err := writeFrame(pw, []byte(`{"type":"zypp_control","event":"commit_active"}`)); err != nil {
@@ -302,7 +411,7 @@ func TestInvokeIO_ElicitationRoundTrip(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		invokeIO(ctx, stdinW, pr, func() {}, onFrame)
+		invokeIO(ctx, stdinW, pr, &fakeKiller{}, testGracePeriod, onFrame)
 	}()
 
 	if err := writeFrame(pw, []byte(`{"type":"elicitation","method":"trust_key","data":{}}`)); err != nil {

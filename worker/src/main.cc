@@ -1,6 +1,7 @@
 #include "transport.h"
 #include "context.h"
 #include "callbacks.h"
+#include "cancellation.h"
 #include "tools/registry.h"
 #include "tools/tools.h"
 
@@ -96,6 +97,11 @@ int main( int argc, char ** argv )
     if ( !logfile )
         logfile = "/var/log/zypp-mcp-tool.log";
     zypp::base::LogControl::instance().logfile( logfile );
+
+    // Installed unconditionally (harmless for read-only tools, which never
+    // poll it) — see cancellation.h for the proxy-side SIGTERM/SIGKILL
+    // protocol this responds to.
+    mcp::installCancellationHandler();
 
     const Args args = parseArgs( argc, argv );
     ToolContext ctx;

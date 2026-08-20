@@ -1,4 +1,5 @@
 #include "callbacks.h"
+#include "cancellation.h"
 
 #include <algorithm>
 #include <sstream>
@@ -12,6 +13,47 @@
 // valid JSON the proxy sends, not just the exact shape we expect.
 namespace
 {
+    /// Set once McpCommitActiveReceive::start() has confirmed the RPM
+    /// transaction is actually proceeding — the "point of no return" the
+    /// registry's tool descriptions (main.cc) already promise. A
+    /// function-local static, not a namespace-scope global, to avoid
+    /// static-initialization-order concerns entirely — mirrors
+    /// cancellation.h's cancellationRequested() shape. Deliberately a plain
+    /// bool, not signal-safe state: set and read entirely from ordinary
+    /// callback code running on this process's single thread, unlike
+    /// cancellation.h's sig_atomic_t-backed flag, which specifically has to
+    /// survive being written from a signal handler.
+    ///
+    /// Why this exists at all: DownloadResolvableReport/CommitPreloadReport
+    /// (McpDownloadReceive/McpCommitPreloadReceive below) are not
+    /// guaranteed to fire only before commit_active. In
+    /// TargetImpl::commit()'s DownloadAsNeeded mode, the whole
+    /// pre-commit_active preload block is skipped entirely, and the *same*
+    /// per-package download callback fires later instead, interleaved with
+    /// already-applied install steps — i.e. strictly after commit_active.
+    /// Honoring cancellation there would abort a partially-applied
+    /// transaction, not a clean no-op — the opposite of what the
+    /// registry's "cannot be interrupted" promise requires. Gating on this
+    /// explicit flag (rather than assuming which download mode is in play,
+    /// or that this callback is confined to the preload phase) keeps that
+    /// promise regardless of which internal libzypp path a given commit()
+    /// call happens to take.
+    bool & pastPointOfNoReturn()
+    {
+        static bool flag = false;
+        return flag;
+    }
+
+    /// True only when a download/preload progress callback should actually
+    /// abort right now: cancellation was requested (SIGTERM) AND the point
+    /// of no return has not been crossed yet. Not a capability query — it
+    /// reflects an actual decision, not merely whether aborting would be
+    /// possible.
+    bool shouldAbortNow()
+    {
+        return mcp::cancellationRequested() && !pastPointOfNoReturn();
+    }
+
     /// Parse a {"answer": "..."} frame. Returns the value or empty on any
     /// parse failure or missing field — callers must treat empty as "decline".
     std::string parseAnswer( const std::string & frame )
@@ -338,7 +380,14 @@ bool McpDownloadReceive::progress( int value, zypp::Resolvable::constPtr resolva
         { "package", resolvable->name() },
         { "percent", std::int32_t( std::max( 0, std::min( 100, value ) ) ) }
     } }.asJSON() );
-    return true; // never abort from progress
+
+    // Returning false throws AbortRequestException out of the current
+    // download (zypp/repo/PackageProvider.cc) — but only honor that while
+    // shouldAbortNow() holds; see its definition above for why this
+    // callback cannot assume it is always safe to abort here (DownloadAsNeeded
+    // mode fires this same callback interleaved with already-applied
+    // install steps, strictly after commit_active).
+    return !shouldAbortNow();
 }
 
 void McpDownloadReceive::finish( zypp::Resolvable::constPtr resolvable, Error error, const std::string & )
@@ -389,7 +438,15 @@ bool McpCommitPreloadReceive::progress( int value, const zypp::callback::UserDat
         frame.add( "bytes_required", bytesRequired );
 
     _t.writeFrame( frame.asJSON() );
-    return true; // never abort from progress
+
+    // Returning false marks the preload dispatcher's downloads as missed
+    // and cancels it (commitpackagepreloader.cc) — only honor that while
+    // shouldAbortNow() holds. This report only ever fires before
+    // commit_active in practice (see TargetImpl::commit()'s
+    // DownloadAsNeeded branch, which skips this whole preloader entirely),
+    // but gate on the same explicit flag as McpDownloadReceive regardless,
+    // rather than relying on that being true.
+    return !shouldAbortNow();
 }
 
 void McpCommitPreloadReceive::fileStart( const zypp::Pathname & localfile, const zypp::callback::UserData & userData )
@@ -456,7 +513,15 @@ bool McpCommitActiveReceive::start( const UserData & )
         std::istringstream ss( *ans );
         const auto val = zypp::json::parseDocument( zypp::InputStream(ss) );
         const auto & obj = val.asObject();
-        return obj.contains( "ack" ) && bool( obj.value( "ack" ).asBool() );
+        const bool proceed = obj.contains( "ack" ) && bool( obj.value( "ack" ).asBool() );
+
+        // Latch the point of no return only on genuine proceed — a decline
+        // here means TargetImpl::commit() throws TargetAbortedException and
+        // never enters the transaction, so cancellation must remain honored
+        // (McpDownloadReceive/McpCommitPreloadReceive's shouldAbortNow()).
+        if ( proceed )
+            pastPointOfNoReturn() = true;
+        return proceed;
     }
     catch ( const std::exception & )
     {
