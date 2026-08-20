@@ -54,6 +54,23 @@ namespace
         return mcp::cancellationRequested() && !pastPointOfNoReturn();
     }
 
+    /// True when an elicitation must be skipped rather than sent: the exact
+    /// same condition as shouldAbortNow(), reused under a name that reads
+    /// correctly at these call sites. Skipping is deny-equivalent, never an
+    /// approval shortcut — the caller applies the identical fail-closed
+    /// outcome a genuine decline would produce, it just avoids the round
+    /// trip and (critically) the indefinite block on McpTransport::readFrame()
+    /// (no timeout by design — see transport.h) that a SIGTERM cannot
+    /// interrupt (our handler uses SA_RESTART deliberately, see
+    /// cancellation.cc). Past the point of no return this is always false,
+    /// same as shouldAbortNow() — trust/security decisions are never
+    /// short-circuited once the transaction may have started, only
+    /// discretionary cancellation is.
+    bool skipElicitation()
+    {
+        return shouldAbortNow();
+    }
+
     /// Parse a {"answer": "..."} frame. Returns the value or empty on any
     /// parse failure or missing field — callers must treat empty as "decline".
     std::string parseAnswer( const std::string & frame )
@@ -89,6 +106,12 @@ zypp::KeyRingReport::KeyTrust McpKeyRingReceive::askUserToAcceptKey(
     if ( _gate.isAccepted( key.fingerprint() ) )
         return zypp::KeyRingReport::KEY_TRUST_AND_IMPORT;
 
+    if ( skipElicitation() )
+    {
+        _gate.recordRejection( key.fingerprint(), key.name(), repo );
+        return zypp::KeyRingReport::KEY_DONT_TRUST;
+    }
+
     zypp::json::Object data = {
         { "fingerprint", key.fingerprint()      },
         { "name",        key.name()             },
@@ -123,6 +146,9 @@ bool McpKeyRingReceive::askUserToAcceptUnsignedFile(
     const std::string & file,
     const zypp::KeyContext & ctx )
 {
+    if ( skipElicitation() )
+        return false;
+
     zypp::json::Object data = { { "file", file } };
     if ( !ctx.empty() )
         data.add( "repo", ctx.repoInfo().asUserString() );
@@ -142,6 +168,9 @@ bool McpKeyRingReceive::askUserToAcceptUnknownKey(
     const std::string & id,
     const zypp::KeyContext & ctx )
 {
+    if ( skipElicitation() )
+        return false;
+
     zypp::json::Object data = {
         { "file",  file },
         { "keyid", id   }
@@ -164,13 +193,20 @@ bool McpKeyRingReceive::askUserToAcceptVerificationFailed(
     const zypp::PublicKey & key,
     const zypp::KeyContext & ctx )
 {
+    const std::string repo = ctx.empty() ? std::string() : ctx.repoInfo().asUserString();
+    if ( skipElicitation() )
+    {
+        _gate.recordRejection( key.fingerprint(), key.name(), repo );
+        return false;
+    }
+
     zypp::json::Object data = {
         { "file",        file             },
         { "fingerprint", key.fingerprint()},
         { "name",        key.name()       }
     };
-    if ( !ctx.empty() )
-        data.add( "repo", ctx.repoInfo().asUserString() );
+    if ( !repo.empty() )
+        data.add( "repo", repo );
 
     _t.writeFrame( zypp::json::Object{ {
         { "type",   "elicitation"                 },
@@ -181,8 +217,7 @@ bool McpKeyRingReceive::askUserToAcceptVerificationFailed(
     auto ans = _t.readFrame();
     const bool accepted = ans ? parseBoolAnswer( *ans ) : false;
     if ( !accepted )
-        _gate.recordRejection( key.fingerprint(), key.name(),
-                               ctx.empty() ? std::string() : ctx.repoInfo().asUserString() );
+        _gate.recordRejection( key.fingerprint(), key.name(), repo );
     return accepted;
 }
 
@@ -206,6 +241,13 @@ void McpKeyRingReceive::report( const UserData & userData )
     if ( _gate.isAccepted( key.fingerprint() ) )
     {
         userData.set( "TrustKey", true );
+        return;
+    }
+
+    if ( skipElicitation() )
+    {
+        _gate.recordRejection( key.fingerprint(), key.name(), repo );
+        userData.set( "TrustKey", false );
         return;
     }
 
@@ -238,6 +280,9 @@ void McpKeyRingReceive::report( const UserData & userData )
 // ─── McpDigestReceive ────────────────────────────────────────────────────────
 bool McpDigestReceive::askUserToAcceptNoDigest( const zypp::Pathname & file )
 {
+    if ( skipElicitation() )
+        return false;
+
     _t.writeFrame( zypp::json::Object{ {
         { "type",   "elicitation"       },
         { "method", "accept_no_digest"  },
@@ -252,6 +297,9 @@ bool McpDigestReceive::askUserToAccepUnknownDigest(
     const zypp::Pathname & file,
     const std::string & name )
 {
+    if ( skipElicitation() )
+        return false;
+
     _t.writeFrame( zypp::json::Object{ {
         { "type",   "elicitation"            },
         { "method", "accept_unknown_digest"  },
@@ -270,6 +318,9 @@ bool McpDigestReceive::askUserToAcceptWrongDigest(
     const std::string & requested,
     const std::string & found )
 {
+    if ( skipElicitation() )
+        return false;
+
     _t.writeFrame( zypp::json::Object{ {
         { "type",   "elicitation"          },
         { "method", "accept_wrong_digest"  },

@@ -12,6 +12,7 @@ import (
 	"encoding/json"
 	"io"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -436,6 +437,73 @@ func TestInvokeIO_ElicitationRoundTrip(t *testing.T) {
 	}
 	pw.Close()
 
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("invokeIO did not return")
+	}
+}
+
+// TestInvokeIO_ElicitationDeclinedWhenCancelled verifies that once ctx is
+// cancelled, an elicitation frame is declined immediately without ever
+// invoking onFrame — i.e. without attempting to reach the real MCP client.
+// This is the proxy-side backstop for the worker's own skipElicitation()
+// guard (worker/src/callbacks.cc): the worker's check happens before it
+// sends the frame, so this covers the unavoidable race where the frame was
+// already in flight when cancellation landed.
+func TestInvokeIO_ElicitationDeclinedWhenCancelled(t *testing.T) {
+	pr, pw := io.Pipe()
+	stdinR, stdinW := io.Pipe()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // already cancelled before the elicitation frame arrives
+
+	var onFrameCalled atomic.Bool
+	onFrame := func(frame json.RawMessage) []byte {
+		onFrameCalled.Store(true)
+		return []byte(`{"answer":"accept"}`)
+	}
+
+	var mu sync.Mutex
+	var stdinReceived []byte
+	readDone := make(chan struct{})
+	go func() {
+		defer close(readDone)
+		body, err := readFrame(stdinR)
+		if err != nil {
+			return
+		}
+		mu.Lock()
+		stdinReceived = body
+		mu.Unlock()
+	}()
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		invokeIO(ctx, stdinW, pr, &fakeKiller{}, testGracePeriod, onFrame)
+	}()
+
+	if err := writeFrame(pw, []byte(`{"type":"elicitation","method":"trust_key","data":{}}`)); err != nil {
+		t.Fatalf("writeFrame: %v", err)
+	}
+
+	select {
+	case <-readDone:
+	case <-time.After(2 * time.Second):
+		t.Fatal("stdin answer was not written")
+	}
+
+	mu.Lock()
+	got := string(stdinReceived)
+	mu.Unlock()
+	if got != `{"answer":"decline"}` {
+		t.Errorf(`expected {"answer":"decline"} when ctx already cancelled, got %q`, got)
+	}
+	if onFrameCalled.Load() {
+		t.Error("onFrame must not be called when ctx is already cancelled — the real client must never be contacted")
+	}
+
+	pw.Close()
 	select {
 	case <-done:
 	case <-time.After(2 * time.Second):

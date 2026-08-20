@@ -290,7 +290,17 @@ func invokeIO(ctx context.Context, stdin io.WriteCloser, stdout io.Reader, k kil
 
 		case "elicitation":
 			var answer []byte
-			if onFrame != nil {
+			// If ctx is already cancelled, decline immediately without
+			// ever calling onFrame — i.e. without attempting to reach the
+			// real MCP client. The worker has its own equivalent guard
+			// (worker/src/callbacks.cc: skipElicitation()), but that check
+			// happens before the frame is sent; this is the backstop for
+			// the unavoidable race where the frame was already in flight
+			// when cancellation landed. Mirrors the commit_active branch's
+			// ctx.Err() check above.
+			if ctx.Err() != nil {
+				answer = []byte(`{"answer":"decline"}`)
+			} else if onFrame != nil {
 				answer = onFrame(json.RawMessage(body))
 			}
 			if answer == nil {
