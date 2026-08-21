@@ -221,22 +221,137 @@ func handleElicitation(ctx context.Context, req *mcp.CallToolRequest, frame json
 	return resp
 }
 
-// progressFrame mirrors the JSON emitted by McpInstallReceive/McpRemoveReceive
-// in callbacks.cc — see worker/src/callbacks.cc.
+// progressFrame mirrors the JSON emitted by every progress-reporting
+// receiver in callbacks.cc — the classic McpInstallReceive/McpRemoveReceive/
+// McpDownloadReceive/McpCommitPreloadReceive, and the SingleTrans-backend
+// counterparts (McpInstallSAReceive, McpRemoveSAReceive,
+// McpCommitScriptSAReceive, McpTransactionSAReceive, McpCleanupSAReceive,
+// McpSingleTransReceive). Not every receiver sets every field — see
+// progressMessage for which fields apply to which "action".
 type progressFrame struct {
-	Action   string `json:"action"`
-	Package  string `json:"package,omitempty"`
-	Edition  string `json:"edition,omitempty"`
-	Percent  *int   `json:"percent,omitempty"`
-	Finished bool   `json:"finished,omitempty"`
-	Error    bool   `json:"error,omitempty"`
+	Action     string `json:"action"`
+	Package    string `json:"package,omitempty"`
+	Edition    string `json:"edition,omitempty"`
+	Percent    *int   `json:"percent,omitempty"`
+	Finished   bool   `json:"finished,omitempty"`
+	Error      bool   `json:"error,omitempty"`
+	Cached     bool   `json:"cached,omitempty"`
+	RpmOutput  string `json:"rpm_output,omitempty"`
+	Level      string `json:"level,omitempty"`
+	Line       string `json:"line,omitempty"`
+	ScriptType string `json:"script_type,omitempty"`
+	Severity   string `json:"severity,omitempty"`
+	Name       string `json:"name,omitempty"`
+}
+
+// rpmLoglinePrefix mirrors SingleTransReport::loglevelPrefix() (ZYppCallbacks.h)
+// — reusing libzypp's own suggested rendering for a given level rather than
+// inventing a separate one here.
+var rpmLoglinePrefix = map[string]string{
+	"critical": "fatal error: ",
+	"error":    "error: ",
+	"warning":  "warning: ",
+	"info":     "",
+	"debug":    "D: ",
+}
+
+// progressMessage builds the human-readable message and progress/total pair
+// for a notifications/progress message from a worker progress frame, or
+// returns ok=false if the frame carries nothing worth forwarding.
+//
+// Pure and side-effect free by design, unlike handleProgress itself, so it
+// can be unit tested directly without a live MCP session.
+//
+// Log-line frames (rpm_output, rpm_log) carry no percent at all — they are
+// pure informational text, not tied to a specific step's completion. Rather
+// than tracking state across calls to "carry forward" a percent (this
+// function, and the rest of the progress path, is deliberately stateless —
+// see handleProgress's doc comment on best-effort semantics), they are
+// reported with progress=0/total=0: a 0/0 ratio distinct from 0/100,
+// signaling "no percent applicable" rather than a spurious regression to 0%
+// on an otherwise-advancing progress bar.
+func progressMessage(pf progressFrame) (message string, percent, total float64, ok bool) {
+	// Raw output takes priority over action-specific formatting regardless
+	// of which step it's attached to (install/remove/script/transaction) —
+	// the line itself is the entire informational content of the frame.
+	if pf.RpmOutput != "" {
+		return pf.RpmOutput, 0, 0, true
+	}
+
+	switch pf.Action {
+	case "rpm_log":
+		if pf.Line == "" {
+			return "", 0, 0, false
+		}
+		return rpmLoglinePrefix[pf.Level] + pf.Line, 0, 0, true
+
+	case "script":
+		switch {
+		case pf.Finished && pf.Severity == "critical":
+			message = fmt.Sprintf("%s script failed", pf.ScriptType)
+		case pf.Finished && pf.Severity == "warning":
+			message = fmt.Sprintf("%s script warning", pf.ScriptType)
+		case pf.Finished:
+			message = fmt.Sprintf("%s script finished", pf.ScriptType)
+		default:
+			message = fmt.Sprintf("Executing %s script", pf.ScriptType)
+		}
+		if pf.Package != "" {
+			message += ": " + pf.Package
+		}
+		return message, percentOf(pf), 100, true
+
+	case "transaction":
+		name := pf.Name
+		if name == "" {
+			name = pf.Action
+		}
+		switch {
+		case pf.Finished && pf.Error:
+			message = fmt.Sprintf("%s failed", name)
+		case pf.Finished:
+			message = fmt.Sprintf("%s finished", name)
+		default:
+			message = name
+		}
+		return message, percentOf(pf), 100, true
+
+	default:
+		// Covers install/remove/download/preload/cleanup — cleanup's
+		// Package field holds an NVRA string, which the generic
+		// "%s %s" (action, package) branch already renders sensibly.
+		switch {
+		case pf.Finished && pf.Error:
+			message = fmt.Sprintf("%s failed", pf.Action)
+		case pf.Finished:
+			message = fmt.Sprintf("%s finished", pf.Action)
+		case pf.Cached:
+			message = fmt.Sprintf("%s %s (already cached)", pf.Action, pf.Package)
+		case pf.Package != "":
+			message = fmt.Sprintf("%s %s", pf.Action, pf.Package)
+		default:
+			message = pf.Action
+		}
+		return message, percentOf(pf), 100, true
+	}
+}
+
+func percentOf(pf progressFrame) float64 {
+	if pf.Percent != nil {
+		return float64(*pf.Percent)
+	}
+	if pf.Finished {
+		return 100
+	}
+	return 0
 }
 
 // handleProgress forwards a worker progress frame as an MCP
 // notifications/progress message. No-op if the client did not request
-// progress (no progressToken) or if the session is unavailable. Errors from
-// the notification itself are logged, not surfaced — progress is best-effort
-// and must never fail the underlying tool call.
+// progress (no progressToken) or if the session is unavailable, or if the
+// frame carries nothing worth forwarding (progressMessage's ok=false).
+// Errors from the notification itself are logged, not surfaced — progress
+// is best-effort and must never fail the underlying tool call.
 func handleProgress(ctx context.Context, req *mcp.CallToolRequest, progressToken any, frame json.RawMessage) {
 	if progressToken == nil || req.Session == nil {
 		return
@@ -247,29 +362,15 @@ func handleProgress(ctx context.Context, req *mcp.CallToolRequest, progressToken
 		return
 	}
 
-	var message string
-	switch {
-	case pf.Finished && pf.Error:
-		message = fmt.Sprintf("%s failed", pf.Action)
-	case pf.Finished:
-		message = fmt.Sprintf("%s finished", pf.Action)
-	case pf.Package != "":
-		message = fmt.Sprintf("%s %s", pf.Action, pf.Package)
-	default:
-		message = pf.Action
-	}
-
-	percent := 0.0
-	if pf.Percent != nil {
-		percent = float64(*pf.Percent)
-	} else if pf.Finished {
-		percent = 100
+	message, percent, total, ok := progressMessage(pf)
+	if !ok {
+		return
 	}
 
 	_ = req.Session.NotifyProgress(ctx, &mcp.ProgressNotificationParams{
 		ProgressToken: progressToken,
 		Message:       message,
 		Progress:      percent,
-		Total:         100,
+		Total:         total,
 	})
 }
