@@ -93,6 +93,140 @@ private:
     McpTransport & _t;
 };
 
+// ─── Single-transaction (SingleTrans) reports ────────────────────────────────
+/// libzypp runs a commit through one of two backends: the classic
+/// per-package loop, or — when ZYppCommitPolicy::singleTransModeEnabled()
+/// (see ZYppCommitPolicy.cc; the default on several build flavors) — a
+/// single rpm transaction driven by the zypp-rpm helper. The two emit
+/// *different* report families: the classic one uses
+/// Install/RemoveResolvableReport (McpInstallReceive/McpRemoveReceive
+/// above), the SingleTrans one uses the *ReportSA family below plus the
+/// transaction-wide SingleTransReport.
+///
+/// Both must be handled. If nothing listens to the SA reports, libzypp
+/// activates SingleTransReportLegacyWrapper (TargetImpl.cc) which bridges
+/// only install/remove start/progress/finish onto the classic reports and
+/// logs a warning — script execution, cleanup, transaction phases
+/// (verify/prepare) and all raw rpm output are silently lost. Connecting
+/// any one of the SA receivers suppresses that wrapper
+/// (singleTransReportsConnected()), so they are connected as a set.
+///
+/// None of these can abort: every progress() returns void, unlike the
+/// classic reports. They are also reached only after the commit_active
+/// point of no return, so no cancellation gating applies (see
+/// callbacks.cc: shouldAbortNow()).
+
+/// Transaction-wide report. Only carries contentLogline — the raw rpm log
+/// stream for the whole transaction, not tied to any one step.
+struct McpSingleTransReceive
+    : public zypp::callback::ReceiveReport<zypp::target::rpm::SingleTransReport>
+{
+    explicit McpSingleTransReceive( McpTransport & t ) : _t( t ) {}
+
+    void report( const UserData & userData ) override;
+
+private:
+    McpTransport & _t;
+};
+
+/// Per-package install during a single transaction — the SingleTrans
+/// counterpart of McpInstallReceive. Emits the same "action":"install"
+/// frames so consumers see one consistent stream regardless of backend,
+/// plus "rpm_output" lines via report()/contentRpmout.
+struct McpInstallSAReceive
+    : public zypp::callback::ReceiveReport<zypp::target::rpm::InstallResolvableReportSA>
+{
+    explicit McpInstallSAReceive( McpTransport & t ) : _t( t ) {}
+
+    void start( zypp::Resolvable::constPtr resolvable, const UserData & ) override;
+    void progress( int value, zypp::Resolvable::constPtr resolvable, const UserData & ) override;
+    void finish( zypp::Resolvable::constPtr resolvable, Error error, const UserData & ) override;
+    void report( const UserData & userData ) override;
+    void reportend() override;
+
+private:
+    McpTransport & _t;
+    std::string    _package;   ///< current package, to attribute rpm output
+};
+
+/// Per-package removal during a single transaction — SingleTrans
+/// counterpart of McpRemoveReceive, emitting "action":"remove".
+struct McpRemoveSAReceive
+    : public zypp::callback::ReceiveReport<zypp::target::rpm::RemoveResolvableReportSA>
+{
+    explicit McpRemoveSAReceive( McpTransport & t ) : _t( t ) {}
+
+    void start( zypp::Resolvable::constPtr resolvable, const UserData & ) override;
+    void progress( int value, zypp::Resolvable::constPtr resolvable, const UserData & ) override;
+    void finish( zypp::Resolvable::constPtr resolvable, Error error, const UserData & ) override;
+    void report( const UserData & userData ) override;
+    void reportend() override;
+
+private:
+    McpTransport & _t;
+    std::string    _package;
+};
+
+/// rpm scriptlet execution (%post, %posttrans, ...). The resolvable may be
+/// null and the package name empty — e.g. for transaction-wide posttrans
+/// scripts. Emits "action":"script".
+struct McpCommitScriptSAReceive
+    : public zypp::callback::ReceiveReport<zypp::target::rpm::CommitScriptReportSA>
+{
+    explicit McpCommitScriptSAReceive( McpTransport & t ) : _t( t ) {}
+
+    void start( const std::string & scriptType,
+                const std::string & packageName,
+                zypp::Resolvable::constPtr resolvable,
+                const UserData & ) override;
+    void progress( int value, zypp::Resolvable::constPtr resolvable, const UserData & ) override;
+    void finish( zypp::Resolvable::constPtr resolvable, Error error, const UserData & ) override;
+    void report( const UserData & userData ) override;
+    void reportend() override;
+
+private:
+    McpTransport & _t;
+    std::string    _scriptType;
+    std::string    _package;
+};
+
+/// Generic named transaction phase — libzypp uses this for rpm's own
+/// "Verifying"/"Preparing" stages. Emits "action":"transaction".
+struct McpTransactionSAReceive
+    : public zypp::callback::ReceiveReport<zypp::target::rpm::TransactionReportSA>
+{
+    explicit McpTransactionSAReceive( McpTransport & t ) : _t( t ) {}
+
+    void start( const std::string & name, const UserData & ) override;
+    void progress( int value, const UserData & ) override;
+    void finish( Error error, const UserData & ) override;
+    void report( const UserData & userData ) override;
+    void reportend() override;
+
+private:
+    McpTransport & _t;
+    std::string    _name;
+};
+
+/// Removal of the superseded version after an upgrade. Emits
+/// "action":"cleanup"; identifies the package by NVRA string only (no
+/// Resolvable is available at this point).
+struct McpCleanupSAReceive
+    : public zypp::callback::ReceiveReport<zypp::target::rpm::CleanupPackageReportSA>
+{
+    explicit McpCleanupSAReceive( McpTransport & t ) : _t( t ) {}
+
+    void start( const std::string & nvra, const UserData & ) override;
+    void progress( int value, const UserData & ) override;
+    void finish( Error error, const UserData & ) override;
+    void report( const UserData & userData ) override;
+    void reportend() override;
+
+private:
+    McpTransport & _t;
+    std::string    _nvra;
+};
+
 // ─── Download progress ────────────────────────────────────────────────────────
 /// Fires per-package during commit while zypp fetches packages from repos.
 /// Never aborts (progress always returns true).
@@ -187,6 +321,15 @@ private:
     McpDownloadReceive       _download;
     McpCommitPreloadReceive  _preload;
     McpCommitActiveReceive   _commitActive;
+    // SingleTrans backend counterparts — connected as a set alongside the
+    // classic receivers above, since which pair actually fires depends on
+    // ZYppCommitPolicy::singleTransModeEnabled() at commit time.
+    McpSingleTransReceive     _singleTrans;
+    McpInstallSAReceive       _installSA;
+    McpRemoveSAReceive        _removeSA;
+    McpCommitScriptSAReceive  _scriptSA;
+    McpTransactionSAReceive   _transactionSA;
+    McpCleanupSAReceive       _cleanupSA;
 };
 
 #endif // MCP_SERVER_ZYPP_CALLBACKS_H
