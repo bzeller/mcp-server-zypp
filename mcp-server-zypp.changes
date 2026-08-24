@@ -1,0 +1,6 @@
+-------------------------------------------------------------------
+Mon Aug 03 12:00:00 UTC 2026 - Benjamin Zeller <bzeller@suse.de>
+
+- Initial package for mcp-server-zypp, an MCP server exposing
+  libzypp package management operations to LLM agents via the
+  Model Context Protocol.
