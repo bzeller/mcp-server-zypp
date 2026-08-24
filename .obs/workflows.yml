@@ -1,0 +1,8 @@
+ci_workflow:
+  steps:
+    - branch_package:
+        source_project: zypp:ci:mcp-server-zypp
+        source_package: mcp-server-zypp
+        target_project: home:zypp-team
+  filters:
+    event: pull_request

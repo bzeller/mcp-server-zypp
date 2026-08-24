@@ -31,6 +31,7 @@ BuildRequires:  gcc-c++
 BuildRequires:  go >= 1.23
 BuildRequires:  libzypp-devel
 BuildRequires:  yaml-cpp-devel
+BuildRequires:  zstd
 
 %description
 mcp-server-zypp is an MCP (Model Context Protocol) server that exposes
