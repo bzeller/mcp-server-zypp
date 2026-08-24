@@ -1,4 +1,42 @@
 -------------------------------------------------------------------
+Thu Aug 27 14:37:15 UTC 2026 - Benjamin Zeller <bzeller@suse.de>
+
+- Tools are now split into root-gated confirm_install/confirm_remove
+  (which commit changes) and plan_install/plan_remove plus read-only
+  tools (which never require root); confirm_install/confirm_remove
+  refuse to run without root privileges.
+- GPG key trust decisions during confirm_install now go exclusively
+  through interactive elicitation - no tool argument can pre-approve
+  a key fingerprint, so an LLM agent can never silently bypass a
+  package signature check.
+- Added a license/EULA confirmation gate to confirm_install: an
+  install that requires accepting a license is blocked until the
+  license text has been explicitly accepted; re-accepting is skipped
+  on upgrade only when the license text is provably unchanged.
+- confirm_install/confirm_remove can now be cancelled cleanly while
+  still solving or downloading packages; once the RPM transaction
+  itself has begun it always runs to completion and is never
+  interrupted.
+- Progress notifications are now forwarded for package installation,
+  removal and download, including systems where libzypp performs the
+  transaction as a single rpm invocation (previously silently
+  unsupported, falling back to a bare warning with no progress at
+  all).
+- confirm_install/confirm_remove now report detailed diagnostics when
+  a commit fails, including which packages failed vs. were skipped
+  and the underlying errors/warnings, instead of a single generic
+  failure message. A failing RPM scriptlet no longer fails the whole
+  operation silently; it is reported as a warning instead.
+- Solver failure reports across all tools now include the full
+  problem detail and proposed solutions, not just a one-line summary.
+- Errors reported by tools are no longer summarized down to a short
+  message; the full diagnostic detail is now preserved end to end.
+- The HTTP transport is disabled by default until it has proper
+  authentication; only the stdio transport is enabled out of the box.
+- Fixed a potential crash when a tool call's JSON arguments were
+  malformed or missing an expected field.
+
+-------------------------------------------------------------------
 Mon Aug 03 12:00:00 UTC 2026 - Benjamin Zeller <bzeller@suse.de>
 
 - Initial package for mcp-server-zypp, an MCP server exposing
