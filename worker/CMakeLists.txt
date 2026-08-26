@@ -36,6 +36,7 @@ set(WORKER_HEADERS
   src/transport.h
   src/context.h
   src/gpgkeygate.h
+  src/commitfailurelog.h
   src/callbacks.h
   src/cancellation.h
   src/system.h
@@ -49,6 +50,7 @@ set(WORKER_LIB_SOURCES
   src/transport.cc
   src/context.cc
   src/gpgkeygate.cc
+  src/commitfailurelog.cc
   src/callbacks.cc
   src/cancellation.cc
   src/system.cc
@@ -108,3 +110,15 @@ target_link_libraries(zypp-mcp-gpgkeygate-tests PRIVATE Boost::unit_test_framewo
 target_compile_features(zypp-mcp-gpgkeygate-tests PRIVATE cxx_std_17)
 
 add_test(NAME mcp_gpgkeygate_tests COMMAND zypp-mcp-gpgkeygate-tests --catch_system_errors=no)
+
+# CommitFailureLog is deliberately free of libzypp types (see
+# commitfailurelog.h), for the same reason and with the same shape as
+# GpgKeyGate above.
+add_executable(zypp-mcp-commitfailurelog-tests
+  tests/commitfailurelog_test.cc
+  src/commitfailurelog.cc
+)
+target_link_libraries(zypp-mcp-commitfailurelog-tests PRIVATE Boost::unit_test_framework)
+target_compile_features(zypp-mcp-commitfailurelog-tests PRIVATE cxx_std_17)
+
+add_test(NAME mcp_commitfailurelog_tests COMMAND zypp-mcp-commitfailurelog-tests --catch_system_errors=no)

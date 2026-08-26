@@ -1,6 +1,5 @@
 #include "transport.h"
 #include "context.h"
-#include "callbacks.h"
 #include "cancellation.h"
 #include "tools/registry.h"
 #include "tools/tools.h"
@@ -104,11 +103,18 @@ int main( int argc, char ** argv )
     mcp::installCancellationHandler();
 
     const Args args = parseArgs( argc, argv );
-    ToolContext ctx;
 
     // ─── --list-tools: static, no ZYpp lock needed, no framing ──────────────
+    // Handled before ToolContext exists at all — constructing one registers
+    // (and immediately unregisters) 13 callback receivers for a request
+    // that never touches libzypp's callback machinery.
     if ( args.listTools )
         return cmdListTools();
+
+    // Constructing this also connects every callback receiver (see
+    // context.h: ToolContext owns McpCallbackScope as its final member) —
+    // for the lifetime of this process, exactly one of these ever exists.
+    ToolContext ctx;
 
     if ( args.tool.empty() )
     {
@@ -133,9 +139,6 @@ int main( int argc, char ** argv )
             return 2;
         }
     }
-
-    // ─── Register callbacks for the lifetime of this process ─────────────────
-    McpCallbackScope callbacks( ctx.transport(), ctx.gpgKeys() );
 
     // ─── Dispatch via registry ───────────────────────────────────────────────
     // loadSystem() is called inside each tool (via ToolContext) — it acquires

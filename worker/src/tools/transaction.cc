@@ -3,6 +3,8 @@
 #include "validate.h"
 #include "../transport.h"
 
+#include <zypp-core/base/LogTools.h>
+
 #include <zypp/Resolver.h>
 #include <zypp/PoolItem.h>
 #include <zypp/Capability.h>
@@ -148,6 +150,9 @@ bool setupInstall( const zypp::json::Object & arg,
             const std::string detail = repo.empty()
                 ? "Package '" + pkg + "' not found in any repository."
                 : "Package '" + pkg + "' not found in repository '" + repo + "'.";
+
+            MIL << detail << std::endl;
+
             t.writeFrame( zypp::json::Object{ {
                 { "type",   "error"    },
                 { "code",   "NOT_FOUND"},
@@ -428,4 +433,97 @@ bool checkLicensesAccepted( const ResPool &                pool,
         { "licenses", std::move(pending)               }
     } }.asJSON() );
     return false;
+}
+
+// ─── Commit failure reporting ───────────────────────────────────────────────
+namespace
+{
+    /// Append one {name, edition, arch} entry built from a Step's own
+    /// accessors — never satSolvable(), see transaction.h's doc comment on
+    /// commitFailureToJson() for why that matters here specifically.
+    void addStepEntry( zypp::json::Array & array, const sat::Transaction::Step & step )
+    {
+        array.add( zypp::json::Object{ {
+            { "name",    step.ident().asString()   },
+            { "edition", step.edition().asString()  },
+            { "arch",    step.arch().asString()     }
+        } } );
+    }
+
+    /// {package?, phase, severity, text} for one CommitFailureDetail —
+    /// shared between commitFailureToJson()'s "details" array and
+    /// commitIssuesToJson(), so both serialize entries identically.
+    zypp::json::Object detailToJson( const CommitFailureDetail & entry )
+    {
+        zypp::json::Object d = {
+            { "phase",    std::string( phaseName( entry.phase ) )       },
+            { "severity", std::string( severityName( entry.severity ) ) },
+            { "text",     entry.text }
+        };
+        if ( !entry.package.empty() )
+            d.add( "package", entry.package );
+        return d;
+    }
+}
+
+zypp::json::Object commitFailureToJson( const std::string &            toolName,
+                                        const std::string &            code,
+                                        const std::string &            detail,
+                                        const zypp::ZYppCommitResult & result,
+                                        const CommitFailureLog &       failures )
+{
+    zypp::json::Array failedInstalls, failedRemovals, skippedInstalls, skippedRemovals;
+
+    // Bucketed exactly as zypper's CommitSummary::collectData() does
+    // (src/CommitSummary.cc) — TRANSACTION_IGNORE steps carry no actionable
+    // information (obsoletes, non-package actions) and are always omitted,
+    // matching zypper.
+    for ( const auto & step : result.transactionStepList() )
+    {
+        const bool failed = step.stepStage() == sat::Transaction::STEP_ERROR;
+        switch ( step.stepType() )
+        {
+            case sat::Transaction::TRANSACTION_ERASE:
+                addStepEntry( failed ? failedRemovals : skippedRemovals, step );
+                break;
+            case sat::Transaction::TRANSACTION_INSTALL:
+            case sat::Transaction::TRANSACTION_MULTIINSTALL:
+                addStepEntry( failed ? failedInstalls : skippedInstalls, step );
+                break;
+            case sat::Transaction::TRANSACTION_IGNORE:
+            default:
+                break;
+        }
+    }
+
+    zypp::json::Array details;
+    for ( const auto & entry : failures.entries() )
+        details.add( detailToJson( entry ) );
+
+    zypp::json::Object frame = {
+        { "type",             "error"                       },
+        { "code",             code                          },
+        { "tool",             toolName                      },
+        { "detail",           detail                        },
+        { "failed_installs",  std::move(failedInstalls)     },
+        { "failed_removals",  std::move(failedRemovals)     },
+        { "skipped_installs", std::move(skippedInstalls)    },
+        { "skipped_removals", std::move(skippedRemovals)    },
+        { "details",          std::move(details)            }
+    };
+    if ( failures.wasTruncated() )
+        frame.add( "truncated", true );
+    return frame;
+}
+
+zypp::json::Array commitIssuesToJson( const CommitFailureLog & failures )
+{
+    zypp::json::Array issues;
+    for ( const auto & entry : failures.entries() )
+    {
+        if ( entry.severity == CommitSeverity::Detail )
+            continue; // routine context only, never surfaced on its own
+        issues.add( detailToJson( entry ) );
+    }
+    return issues;
 }

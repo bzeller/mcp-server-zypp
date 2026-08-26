@@ -92,6 +92,21 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
     ZYppCommitPolicy policy;
     policy.syncPoolAfterCommit( true );
 
+    // writeCommitFailure reports why, not just that, a commit failed — see
+    // transaction.h: commitFailureToJson(). COMMIT_FAILED vs
+    // COMMIT_PREPARE_FAILED (result.attemptToModify()) distinguishes "some
+    // packages may have already been changed" from "nothing was touched".
+    auto writeCommitFailure = [&]( const ZYppCommitResult & result )
+    {
+        const bool attempted = result.attemptToModify();
+        t.writeFrame( commitFailureToJson(
+            "confirm_install",
+            attempted ? "COMMIT_FAILED" : "COMMIT_PREPARE_FAILED",
+            attempted ? "confirm_install failed, some packages may have been changed."
+                      : "confirm_install failed, nothing was installed.",
+            result, ctx.failures() ).asJSON() );
+    };
+
     ZYppCommitResult result;
     try
     {
@@ -106,6 +121,28 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
             writeKeyError();
             return 1;
         }
+        // A download/install/remove failure surfaces here too — e.g. a
+        // problem() override returning ABORT raises AbortRequestException,
+        // which TargetImpl::commit() converts into a thrown
+        // TargetAbortedException. commit() returns ZYppCommitResult purely
+        // by value, so when it throws, the assignment to result above never
+        // happens — result is still the empty object default-constructed
+        // before the try block, and attemptToModify() on that is always
+        // false (ZYppCommitResult.cc: FalseBool). Reusing writeCommitFailure
+        // here would therefore always claim "nothing was installed", even
+        // if the exception fired deep into a real transaction. Report
+        // COMMIT_FAILED unconditionally instead — the more cautious of the
+        // two messages — since we genuinely cannot tell which is true;
+        // ctx.failures() (populated independently of whether commit()
+        // returns or throws) is still the reliable part of this frame.
+        if ( ctx.failures().hasErrors() )
+        {
+            t.writeFrame( commitFailureToJson(
+                "confirm_install", "COMMIT_FAILED",
+                "confirm_install failed, some packages may have been changed.",
+                result, ctx.failures() ).asJSON() );
+            return 1;
+        }
         throw; // unrelated failure — main()'s handler reports it
     }
 
@@ -115,20 +152,41 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
         return 1;
     }
 
+    if ( !result.allDone() )
+    {
+        writeCommitFailure( result );
+        return 1;
+    }
+
     zypp::json::Array installed;
     for ( const auto & step : result.transactionStepList() )
     {
         if ( step.stepType() == sat::Transaction::TRANSACTION_INSTALL )
             installed.add( zypp::json::Object{ {
-                { "name",    step.ident().asString()               },
-                { "edition", step.satSolvable().edition().asString() }
+                { "name",    step.ident().asString()   },
+                { "edition", step.edition().asString()  }
             } } );
     }
 
-    t.writeFrame( zypp::json::Object{ {
+    // Every step completed, but something may still have gone wrong along
+    // the way without stopping it — canonically a %posttrans scriptlet
+    // failing non-fatally (mirrors zypper's ZYPPER_EXIT_INF_RPM_SCRIPT_FAILED,
+    // exit code 107: still a successful operation, just one worth flagging).
+    // See transaction.h: commitIssuesToJson().
+    zypp::json::Object resultFrame = {
         { "type",      "result"          },
         { "tool",      "confirm_install" },
         { "installed", std::move(installed) }
-    } }.asJSON() );
+    };
+    zypp::json::Array warnings = commitIssuesToJson( ctx.failures() );
+    if ( warnings.size() > 0 )
+    {
+        resultFrame.add( "warnings", std::move(warnings) );
+        resultFrame.add( "detail", "confirm_install completed successfully; see "
+                                   "\"warnings\" for non-fatal issues encountered "
+                                   "during the transaction (e.g. a scriptlet "
+                                   "failure that did not prevent installation)." );
+    }
+    t.writeFrame( resultFrame.asJSON() );
     return 0;
 }

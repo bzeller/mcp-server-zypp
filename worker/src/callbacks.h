@@ -1,13 +1,32 @@
 #ifndef MCP_SERVER_ZYPP_CALLBACKS_H
 #define MCP_SERVER_ZYPP_CALLBACKS_H
 
+#include <string>
+#include <vector>
+
 #include <zypp/ZYppCallbacks.h>
 #include <zypp/KeyRing.h>
 #include <zypp/Digest.h>
 
-#include "transport.h"
-#include "gpgkeygate.h"
+// Forward-declared, not included: ToolContext (context.h) owns
+// McpCallbackScope and includes this header, so a full include here would
+// cycle. Every receiver below only stores a ToolContext& and dereferences it
+// in callbacks.cc, which does include context.h — a forward declaration is
+// sufficient for that.
+class ToolContext;
 
+// ─── Callback context access ─────────────────────────────────────────────────
+// Every receiver below takes a ToolContext&, not the individual McpTransport/
+// GpgKeyGate/(future CommitFailureLog etc.) references it happens to need
+// today — with 13 receivers, a shared dependency added later (as
+// CommitFailureLog will be) would otherwise mean touching every one of their
+// constructors again.
+//
+// Off-limits from callback context: ToolContext::loadLiveSystem() and
+// loadSystemFromArg(). Calling either from inside a callback would be
+// reentrancy into libzypp mid-commit — nothing enforces this at compile
+// time, it is a rule to observe, not a capability the type withholds.
+//
 // ─── KeyRing callback ────────────────────────────────────────────────────────
 /// Mirrors zypper/src/callbacks/keyring.h — each virtual override emits an
 /// elicitation frame and blocks on the proxy's stdin for the human answer.
@@ -18,10 +37,10 @@
 /// and communicates solely through ReportBase::report()'s UserData —
 /// overriding report() is the only available interception point. Rather than
 /// blocking on an elicitation like the other members here, this answers
-/// synchronously from the pre-supplied GpgKeyGate — see gpgkeygate.h.
+/// synchronously from the ToolContext-owned GpgKeyGate — see gpgkeygate.h.
 struct McpKeyRingReceive : public zypp::callback::ReceiveReport<zypp::KeyRingReport>
 {
-    McpKeyRingReceive( McpTransport & t, GpgKeyGate & gate ) : _t( t ), _gate( gate ) {}
+    explicit McpKeyRingReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     zypp::KeyRingReport::KeyTrust askUserToAcceptKey(
         const zypp::PublicKey & key,
@@ -44,14 +63,13 @@ struct McpKeyRingReceive : public zypp::callback::ReceiveReport<zypp::KeyRingRep
     void report( const UserData & userData ) override;
 
 private:
-    McpTransport & _t;
-    GpgKeyGate   & _gate;
+    ToolContext & _ctx;
 };
 
 // ─── Digest callback ─────────────────────────────────────────────────────────
 struct McpDigestReceive : public zypp::callback::ReceiveReport<zypp::DigestReport>
 {
-    explicit McpDigestReceive( McpTransport & t ) : _t( t ) {}
+    explicit McpDigestReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     bool askUserToAcceptNoDigest( const zypp::Pathname & file ) override;
     bool askUserToAccepUnknownDigest( const zypp::Pathname & file,
@@ -61,7 +79,7 @@ struct McpDigestReceive : public zypp::callback::ReceiveReport<zypp::DigestRepor
                                      const std::string & found ) override;
 
 private:
-    McpTransport & _t;
+    ToolContext & _ctx;
 };
 
 // ─── Install progress ────────────────────────────────────────────────────────
@@ -69,28 +87,59 @@ private:
 struct McpInstallReceive
     : public zypp::callback::ReceiveReport<zypp::target::rpm::InstallResolvableReport>
 {
-    explicit McpInstallReceive( McpTransport & t ) : _t( t ) {}
+    explicit McpInstallReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     void start( zypp::Resolvable::constPtr resolvable ) override;
     bool progress( int value, zypp::Resolvable::constPtr resolvable ) override;
+
+    /// Captures description into the commit failure log; must always
+    /// return the base default (ABORT) unchanged — see
+    /// McpDownloadReceive::problem() for why.
+    Action problem( zypp::Resolvable::constPtr resolvable, Error error,
+                    const std::string & description, RpmLevel level ) override;
+
     void finish( zypp::Resolvable::constPtr, Error, const std::string &, RpmLevel ) override;
 
+    /// Classic mode has no dedicated script report (unlike SingleTrans's
+    /// CommitScriptReportSA) — a non-fatal %post/%posttrans scriptlet
+    /// failure is only visible as a specific line in contentRpmout. Lines
+    /// matching that pattern are recorded as Warning immediately; all other
+    /// lines are only buffered in _pending (see callbacks.cc:
+    /// pushPending()/flushPending()) and recorded as Detail if finish()
+    /// reports an error — routine output from a package that installed
+    /// cleanly is not worth keeping, and would otherwise risk evicting an
+    /// earlier package's actual failure once CommitFailureLog::kMaxEntries
+    /// is hit.
+    void report( const UserData & userData ) override;
+
 private:
-    McpTransport & _t;
+    ToolContext & _ctx;
+    std::vector<std::string> _pending;   ///< buffered contentRpmout, this package only
 };
 
 // ─── Remove progress ─────────────────────────────────────────────────────────
 struct McpRemoveReceive
     : public zypp::callback::ReceiveReport<zypp::target::rpm::RemoveResolvableReport>
 {
-    explicit McpRemoveReceive( McpTransport & t ) : _t( t ) {}
+    explicit McpRemoveReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     void start( zypp::Resolvable::constPtr resolvable ) override;
     bool progress( int value, zypp::Resolvable::constPtr resolvable ) override;
+
+    /// Captures description into the commit failure log; must always
+    /// return the base default (ABORT) unchanged — see
+    /// McpDownloadReceive::problem() for why.
+    Action problem( zypp::Resolvable::constPtr resolvable, Error error,
+                    const std::string & description ) override;
+
     void finish( zypp::Resolvable::constPtr, Error, const std::string & ) override;
 
+    /// See McpInstallReceive::report() — same rationale.
+    void report( const UserData & userData ) override;
+
 private:
-    McpTransport & _t;
+    ToolContext & _ctx;
+    std::vector<std::string> _pending;
 };
 
 // ─── Single-transaction (SingleTrans) reports ────────────────────────────────
@@ -121,12 +170,12 @@ private:
 struct McpSingleTransReceive
     : public zypp::callback::ReceiveReport<zypp::target::rpm::SingleTransReport>
 {
-    explicit McpSingleTransReceive( McpTransport & t ) : _t( t ) {}
+    explicit McpSingleTransReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     void report( const UserData & userData ) override;
 
 private:
-    McpTransport & _t;
+    ToolContext & _ctx;
 };
 
 /// Per-package install during a single transaction — the SingleTrans
@@ -136,7 +185,7 @@ private:
 struct McpInstallSAReceive
     : public zypp::callback::ReceiveReport<zypp::target::rpm::InstallResolvableReportSA>
 {
-    explicit McpInstallSAReceive( McpTransport & t ) : _t( t ) {}
+    explicit McpInstallSAReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     void start( zypp::Resolvable::constPtr resolvable, const UserData & ) override;
     void progress( int value, zypp::Resolvable::constPtr resolvable, const UserData & ) override;
@@ -145,8 +194,9 @@ struct McpInstallSAReceive
     void reportend() override;
 
 private:
-    McpTransport & _t;
-    std::string    _package;   ///< current package, to attribute rpm output
+    ToolContext & _ctx;
+    std::string   _package;   ///< current package, to attribute rpm output
+    std::vector<std::string> _pending;   ///< buffered contentRpmout, see McpInstallReceive::report()
 };
 
 /// Per-package removal during a single transaction — SingleTrans
@@ -154,7 +204,7 @@ private:
 struct McpRemoveSAReceive
     : public zypp::callback::ReceiveReport<zypp::target::rpm::RemoveResolvableReportSA>
 {
-    explicit McpRemoveSAReceive( McpTransport & t ) : _t( t ) {}
+    explicit McpRemoveSAReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     void start( zypp::Resolvable::constPtr resolvable, const UserData & ) override;
     void progress( int value, zypp::Resolvable::constPtr resolvable, const UserData & ) override;
@@ -163,8 +213,9 @@ struct McpRemoveSAReceive
     void reportend() override;
 
 private:
-    McpTransport & _t;
-    std::string    _package;
+    ToolContext & _ctx;
+    std::string   _package;
+    std::vector<std::string> _pending;
 };
 
 /// rpm scriptlet execution (%post, %posttrans, ...). The resolvable may be
@@ -173,7 +224,7 @@ private:
 struct McpCommitScriptSAReceive
     : public zypp::callback::ReceiveReport<zypp::target::rpm::CommitScriptReportSA>
 {
-    explicit McpCommitScriptSAReceive( McpTransport & t ) : _t( t ) {}
+    explicit McpCommitScriptSAReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     void start( const std::string & scriptType,
                 const std::string & packageName,
@@ -185,9 +236,10 @@ struct McpCommitScriptSAReceive
     void reportend() override;
 
 private:
-    McpTransport & _t;
-    std::string    _scriptType;
-    std::string    _package;
+    ToolContext & _ctx;
+    std::string   _scriptType;
+    std::string   _package;
+    std::vector<std::string> _pending;
 };
 
 /// Generic named transaction phase — libzypp uses this for rpm's own
@@ -195,7 +247,7 @@ private:
 struct McpTransactionSAReceive
     : public zypp::callback::ReceiveReport<zypp::target::rpm::TransactionReportSA>
 {
-    explicit McpTransactionSAReceive( McpTransport & t ) : _t( t ) {}
+    explicit McpTransactionSAReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     void start( const std::string & name, const UserData & ) override;
     void progress( int value, const UserData & ) override;
@@ -204,8 +256,9 @@ struct McpTransactionSAReceive
     void reportend() override;
 
 private:
-    McpTransport & _t;
-    std::string    _name;
+    ToolContext & _ctx;
+    std::string   _name;
+    std::vector<std::string> _pending;
 };
 
 /// Removal of the superseded version after an upgrade. Emits
@@ -214,7 +267,7 @@ private:
 struct McpCleanupSAReceive
     : public zypp::callback::ReceiveReport<zypp::target::rpm::CleanupPackageReportSA>
 {
-    explicit McpCleanupSAReceive( McpTransport & t ) : _t( t ) {}
+    explicit McpCleanupSAReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     void start( const std::string & nvra, const UserData & ) override;
     void progress( int value, const UserData & ) override;
@@ -223,8 +276,9 @@ struct McpCleanupSAReceive
     void reportend() override;
 
 private:
-    McpTransport & _t;
-    std::string    _nvra;
+    ToolContext & _ctx;
+    std::string   _nvra;
+    std::vector<std::string> _pending;
 };
 
 // ─── Download progress ────────────────────────────────────────────────────────
@@ -233,15 +287,25 @@ private:
 struct McpDownloadReceive
     : public zypp::callback::ReceiveReport<zypp::repo::DownloadResolvableReport>
 {
-    explicit McpDownloadReceive( McpTransport & t ) : _t( t ) {}
+    explicit McpDownloadReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     void infoInCache( zypp::Resolvable::constPtr resolvable, const zypp::Pathname & localfile ) override;
     void start( zypp::Resolvable::constPtr resolvable, const zypp::Url & url ) override;
     bool progress( int value, zypp::Resolvable::constPtr resolvable ) override;
     void finish( zypp::Resolvable::constPtr resolvable, Error error, const std::string & reason ) override;
 
+    /// Overridden purely to capture description — otherwise the richest
+    /// available failure text (built from Exception::asUserHistory(), see
+    /// PackageProvider.cc) is dropped on the floor; the base implementation
+    /// discards it entirely. The return value genuinely matters to libzypp
+    /// (PackageProvider.cc switches on it: RETRY/IGNORE/ABORT), so this must
+    /// always return ABORT — the exact base-class default — unchanged.
+    /// Capturing text must never alter control flow.
+    Action problem( zypp::Resolvable::constPtr resolvable, Error error,
+                    const std::string & description ) override;
+
 private:
-    McpTransport & _t;
+    ToolContext & _ctx;
 };
 
 // ─── Commit preload progress ──────────────────────────────────────────────────
@@ -252,7 +316,7 @@ private:
 struct McpCommitPreloadReceive
     : public zypp::callback::ReceiveReport<zypp::media::CommitPreloadReport>
 {
-    explicit McpCommitPreloadReceive( McpTransport & t ) : _t( t ) {}
+    explicit McpCommitPreloadReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     void start( const zypp::callback::UserData & userData = zypp::callback::UserData() ) override;
     bool progress( int value, const zypp::callback::UserData & userData = zypp::callback::UserData() ) override;
@@ -260,7 +324,7 @@ struct McpCommitPreloadReceive
     void finish( Result res, const zypp::callback::UserData & userData = zypp::callback::UserData() ) override;
 
 private:
-    McpTransport & _t;
+    ToolContext & _ctx;
 };
 
 // ─── Commit-active barrier ───────────────────────────────────────────────────
@@ -293,21 +357,27 @@ private:
 struct McpCommitActiveReceive
     : public zypp::callback::ReceiveReport<zypp::target::CommitActiveReport>
 {
-    explicit McpCommitActiveReceive( McpTransport & t ) : _t( t ) {}
+    explicit McpCommitActiveReceive( ToolContext & ctx ) : _ctx( ctx ) {}
 
     bool start( const UserData & ) override;
     void reportend() override;
 
 private:
-    McpTransport & _t;
+    ToolContext & _ctx;
 };
 
 // ─── RAII scope — connect/disconnect all receivers ───────────────────────────
-/// Lifetime: create once in main(), destroyed on process exit.
+/// Owned by ToolContext (see context.h) as its final member, so receivers
+/// are disconnected before any other ToolContext state is torn down.
+/// Uniqueness, not ownership legitimacy, is the actual constraint here:
+/// callback::DistributeReport<T>::instance() holds exactly one raw
+/// Receiver* per report type, so at most one McpCallbackScope — and
+/// therefore at most one ToolContext — may be alive at a time. ToolContext
+/// is already non-copyable, and the worker constructs exactly one.
 class McpCallbackScope
 {
 public:
-    McpCallbackScope( McpTransport & t, GpgKeyGate & gpgKeys );
+    explicit McpCallbackScope( ToolContext & ctx );
     ~McpCallbackScope();
 
     McpCallbackScope( const McpCallbackScope & ) = delete;
