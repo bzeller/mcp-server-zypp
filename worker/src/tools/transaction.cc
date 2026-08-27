@@ -5,6 +5,9 @@
 
 #include <zypp-core/base/LogTools.h>
 
+#undef  ZYPP_BASE_LOGGER_LOGGROUP
+#define ZYPP_BASE_LOGGER_LOGGROUP "zypp-mcp-tool"
+
 #include <zypp/Resolver.h>
 #include <zypp/PoolItem.h>
 #include <zypp/Capability.h>

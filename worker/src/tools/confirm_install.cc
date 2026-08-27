@@ -10,6 +10,10 @@
 #include <zypp/ZYppCommitPolicy.h>
 #include <zypp/ZYppCommitResult.h>
 #include <zypp-core/parser/json/JsonValue.h>
+#include <zypp-core/base/Logger.h>
+
+#undef  ZYPP_BASE_LOGGER_LOGGROUP
+#define ZYPP_BASE_LOGGER_LOGGROUP "zypp-mcp-tool"
 
 using namespace zypp;
 
@@ -49,6 +53,11 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
         t.writeFrame( jsonError( "PERMISSION_DENIED", "confirm_install requires root privileges." ) );
         return 1;
     }
+
+    const std::string pkgArg = arg.contains("package")
+        ? static_cast<std::string>( arg.value("package").asString() ) : "(unset)";
+    MIL << "confirm_install: package=" << pkgArg << std::endl;
+
     // Always live system — no testcase parameter.
     ZYpp::Ptr zypp = ctx.loadLiveSystem();
 
@@ -57,6 +66,7 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
 
     if ( !zypp->resolver()->resolvePool() )
     {
+        ERR << "confirm_install: solver failed" << std::endl;
         t.writeFrame( solverProblemsToJson( "confirm_install", zypp->resolver() ).asJSON() );
         return 1;
     }
@@ -66,7 +76,10 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
     // touched). See transaction.h: checkLicensesAccepted.
     const auto acceptedLicenses = validate::optionalStringSet( arg, "accepted_licenses" );
     if ( !checkLicensesAccepted( zypp->pool(), acceptedLicenses, "confirm_install", t ) )
+    {
+        WAR << "confirm_install: LICENSE_CONFIRMATION_REQUIRED" << std::endl;
         return 1;
+    }
 
     auto writeKeyError = [&]{
         zypp::json::Array keys;
@@ -107,6 +120,8 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
             result, ctx.failures() ).asJSON() );
     };
 
+    MIL << "confirm_install: committing transaction" << std::endl;
+
     ZYppCommitResult result;
     try
     {
@@ -118,6 +133,8 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
         // both are true — report it instead of the raw commit exception.
         if ( ctx.gpgKeys().hasRejections() )
         {
+            ERR << "confirm_install: commit threw, " << ctx.gpgKeys().rejected().size()
+                << " key rejection(s)" << std::endl;
             writeKeyError();
             return 1;
         }
@@ -137,23 +154,45 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
         // returns or throws) is still the reliable part of this frame.
         if ( ctx.failures().hasErrors() )
         {
+            ERR << "confirm_install: commit threw, " << ctx.failures().entries().size()
+                << " failure log entries" << std::endl;
             t.writeFrame( commitFailureToJson(
                 "confirm_install", "COMMIT_FAILED",
                 "confirm_install failed, some packages may have been changed.",
                 result, ctx.failures() ).asJSON() );
             return 1;
         }
+        ERR << "confirm_install: commit threw unexpectedly, re-throwing" << std::endl;
         throw; // unrelated failure — main()'s handler reports it
     }
 
     if ( ctx.gpgKeys().hasRejections() )
     {
+        ERR << "confirm_install: KEY_NOT_TRUSTED, " << ctx.gpgKeys().rejected().size()
+            << " key(s)" << std::endl;
         writeKeyError();
         return 1;
     }
 
     if ( !result.allDone() )
     {
+        // Inline counts for the log line only — commitFailureToJson() does
+        // its own equivalent bucketing for the actual response frame; not
+        // worth factoring out a shared helper just for this.
+        int failedInstalls = 0, failedRemovals = 0;
+        for ( const auto & step : result.transactionStepList() )
+        {
+            if ( step.stepStage() != sat::Transaction::STEP_ERROR )
+                continue;
+            if ( step.stepType() == sat::Transaction::TRANSACTION_ERASE )
+                ++failedRemovals;
+            else if ( step.stepType() == sat::Transaction::TRANSACTION_INSTALL
+                   || step.stepType() == sat::Transaction::TRANSACTION_MULTIINSTALL )
+                ++failedInstalls;
+        }
+        ERR << "confirm_install: " << (result.attemptToModify() ? "COMMIT_FAILED" : "COMMIT_PREPARE_FAILED")
+            << ", " << failedInstalls << " failed install(s), " << failedRemovals
+            << " failed removal(s)" << std::endl;
         writeCommitFailure( result );
         return 1;
     }
@@ -173,6 +212,7 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
     // failing non-fatally (mirrors zypper's ZYPPER_EXIT_INF_RPM_SCRIPT_FAILED,
     // exit code 107: still a successful operation, just one worth flagging).
     // See transaction.h: commitIssuesToJson().
+    const std::size_t installedCount = installed.size(); // capture before std::move below
     zypp::json::Object resultFrame = {
         { "type",      "result"          },
         { "tool",      "confirm_install" },
@@ -181,12 +221,14 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
     zypp::json::Array warnings = commitIssuesToJson( ctx.failures() );
     if ( warnings.size() > 0 )
     {
+        WAR << "confirm_install: succeeded with " << warnings.size() << " warning(s)" << std::endl;
         resultFrame.add( "warnings", std::move(warnings) );
         resultFrame.add( "detail", "confirm_install completed successfully; see "
                                    "\"warnings\" for non-fatal issues encountered "
                                    "during the transaction (e.g. a scriptlet "
                                    "failure that did not prevent installation)." );
     }
+    MIL << "confirm_install: succeeded, " << installedCount << " package(s) installed" << std::endl;
     t.writeFrame( resultFrame.asJSON() );
     return 0;
 }

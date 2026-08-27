@@ -10,6 +10,9 @@
 #include <zypp/PoolItem.h>
 #include <zypp/ui/Selectable.h>
 #include <zypp/misc/PoolInstallState.h>
+#include <zypp/Resolver.h>
+#include <zypp/ResolverProblem.h>
+#include <zypp/ProblemSolution.h>
 
 // ─── JSON error helper ────────────────────────────────────────────────────────
 // Single shared builder for the generic {"type":"error","code":...,"detail":...}
@@ -135,7 +138,28 @@ inline zypp::json::Object solverProblemsToJson( const std::string & toolName, zy
 {
     zypp::json::Array problems;
     for ( const auto & p : resolver->problems() )
-        problems.add( zypp::json::Object{ { { "description", p->description() } } } );
+    {
+        zypp::json::Object problem = { { "description", p->description() } };
+        if ( !p->details().empty() )
+            problem.add( "details", p->details() );
+
+        // The solutions are the actionable part of a solver problem — e.g.
+        // "do not install foo", "remove bar", "ignore this dependency of
+        // baz" — and were previously dropped entirely, leaving only the
+        // one-line description of what went wrong with no indication of
+        // what could be done about it.
+        zypp::json::Array solutions;
+        for ( const auto & s : p->solutions() )
+        {
+            zypp::json::Object solution = { { "description", s->description() } };
+            if ( !s->details().empty() )
+                solution.add( "details", s->details() );
+            solutions.add( std::move(solution) );
+        }
+        problem.add( "solutions", std::move(solutions) );
+
+        problems.add( std::move(problem) );
+    }
 
     return zypp::json::Object{ {
         { "type",     "error"        },

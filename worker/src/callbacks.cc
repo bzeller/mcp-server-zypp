@@ -10,9 +10,13 @@
 #include <vector>
 #include <zypp-core/base/String.h>
 #include <zypp-core/base/InputStream>
+#include <zypp-core/base/Logger.h>
 #include <zypp-core/parser/json.h>
 #include <zypp-core/parser/json/JsonValue.h>
 #include <zypp/sat/Solvable.h>
+
+#undef  ZYPP_BASE_LOGGER_LOGGROUP
+#define ZYPP_BASE_LOGGER_LOGGROUP "zypp-mcp-tool"
 
 // ─── Answer parsing ──────────────────────────────────────────────────────────
 // Uses the real JSON parser rather than substring scanning — correct on any
@@ -308,6 +312,18 @@ namespace
         std::string name = resolvableName( r );
         return name.empty() ? cached : name;
     }
+
+    /// Truncate a description/line for a log entry. Text from
+    /// Exception::asUserHistory() in particular can be multi-paragraph;
+    /// a short prefix is enough to identify the failure in a log scan
+    /// without flooding the logfile — the full text is still delivered to
+    /// the MCP client via CommitFailureLog/the error frame, this is only
+    /// about what belongs in ZYPP_LOGFILE.
+    std::string logSnippet( const std::string & text )
+    {
+        constexpr std::size_t kMaxLen = 120;
+        return text.size() > kMaxLen ? text.substr( 0, kMaxLen ) + "..." : text;
+    }
 }
 
 // ─── McpKeyRingReceive ───────────────────────────────────────────────────────
@@ -320,10 +336,15 @@ zypp::KeyRingReport::KeyTrust McpKeyRingReceive::askUserToAcceptKey(
 
     const std::string repo = ctx.empty() ? std::string() : ctx.repoInfo().asUserString();
     if ( gate.isAccepted( key.fingerprint() ) )
+    {
+        DBG << "KeyRing: fingerprint " << key.fingerprint() << " pre-approved, trusting" << std::endl;
         return zypp::KeyRingReport::KEY_TRUST_AND_IMPORT;
+    }
 
     if ( skipElicitation() )
     {
+        WAR << "KeyRing: skipping elicitation (cancelled), recording rejection of "
+            << key.fingerprint() << std::endl;
         gate.recordRejection( key.fingerprint(), key.name(), repo );
         return zypp::KeyRingReport::KEY_DONT_TRUST;
     }
@@ -337,6 +358,7 @@ zypp::KeyRingReport::KeyTrust McpKeyRingReceive::askUserToAcceptKey(
     if ( !repo.empty() )
         data.add( "repo", repo );
 
+    DBG << "KeyRing: eliciting trust for fingerprint " << key.fingerprint() << std::endl;
     t.writeFrame( zypp::json::Object{ {
         { "type",   "elicitation" },
         { "method", "trust_key"   },
@@ -346,14 +368,18 @@ zypp::KeyRingReport::KeyTrust McpKeyRingReceive::askUserToAcceptKey(
     auto ans = t.readFrame();
     const std::string answer = ans ? parseAnswer( *ans ) : std::string();
 
-    if ( answer == "import" )
-        return zypp::KeyRingReport::KEY_TRUST_AND_IMPORT;
-    if ( answer == "trust" )
-        return zypp::KeyRingReport::KEY_TRUST_TEMPORARILY;
+    if ( answer == "import" || answer == "trust" )
+    {
+        MIL << "KeyRing: fingerprint " << key.fingerprint() << " trusted (answer="
+            << answer << ")" << std::endl;
+        return answer == "import" ? zypp::KeyRingReport::KEY_TRUST_AND_IMPORT
+                                   : zypp::KeyRingReport::KEY_TRUST_TEMPORARILY;
+    }
 
     // Declined, EOF, or a client without elicitation support (the proxy
     // answers "decline" in that case) — deny, and record so the tool can
     // report which key blocked the transaction.
+    WAR << "KeyRing: fingerprint " << key.fingerprint() << " NOT trusted, recording rejection" << std::endl;
     gate.recordRejection( key.fingerprint(), key.name(), repo );
     return zypp::KeyRingReport::KEY_DONT_TRUST;
 }
@@ -419,6 +445,8 @@ bool McpKeyRingReceive::askUserToAcceptVerificationFailed(
     const std::string repo = ctx.empty() ? std::string() : ctx.repoInfo().asUserString();
     if ( skipElicitation() )
     {
+        WAR << "KeyRing: skipping verification-failed elicitation (cancelled), recording "
+               "rejection of " << key.fingerprint() << std::endl;
         gate.recordRejection( key.fingerprint(), key.name(), repo );
         return false;
     }
@@ -440,7 +468,11 @@ bool McpKeyRingReceive::askUserToAcceptVerificationFailed(
     auto ans = t.readFrame();
     const bool accepted = ans ? parseBoolAnswer( *ans ) : false;
     if ( !accepted )
+    {
+        ERR << "KeyRing: signature verification failed for file=" << file
+            << " fingerprint=" << key.fingerprint() << std::endl;
         gate.recordRejection( key.fingerprint(), key.name(), repo );
+    }
     return accepted;
 }
 
@@ -466,12 +498,15 @@ void McpKeyRingReceive::report( const UserData & userData )
 
     if ( gate.isAccepted( key.fingerprint() ) )
     {
+        DBG << "KeyRing: package key " << key.fingerprint() << " pre-approved" << std::endl;
         userData.set( "TrustKey", true );
         return;
     }
 
     if ( skipElicitation() )
     {
+        WAR << "KeyRing: skipping package key elicitation (cancelled), recording rejection of "
+            << key.fingerprint() << std::endl;
         gate.recordRejection( key.fingerprint(), key.name(), repo );
         userData.set( "TrustKey", false );
         return;
@@ -493,8 +528,15 @@ void McpKeyRingReceive::report( const UserData & userData )
     auto ans = t.readFrame();
     const bool trust = ans ? parseBoolAnswer( *ans ) : false;
 
-    if ( !trust )
+    if ( trust )
+    {
+        MIL << "KeyRing: package key " << key.fingerprint() << " trusted" << std::endl;
+    }
+    else
+    {
+        WAR << "KeyRing: package key " << key.fingerprint() << " NOT trusted" << std::endl;
         gate.recordRejection( key.fingerprint(), key.name(), repo );
+    }
 
     // TrustKey is unset at this point — UserData::set() on a const reference
     // is only permitted for a currently-empty value (see UserData.h), so this
@@ -580,6 +622,8 @@ zypp::target::rpm::InstallResolvableReport::Action
 McpInstallReceive::problem( zypp::Resolvable::constPtr resolvable, Error /*error*/,
                             const std::string & description, RpmLevel /*level*/ )
 {
+    ERR << "Install: problem for package=" << resolvableName( resolvable ) << ": "
+        << logSnippet( description ) << std::endl;
     _ctx.failures().record( resolvableName( resolvable ), CommitPhase::Install,
                             CommitSeverity::Error, description );
     return ABORT; // base class default, unchanged — see callbacks.h
@@ -590,6 +634,7 @@ void McpInstallReceive::finish( zypp::Resolvable::constPtr resolvable, Error err
     const std::string pkg = resolvableName( resolvable );
     if ( error != NO_ERROR )
     {
+        WAR << "Install: step failed for package=" << pkg << std::endl;
         if ( !reason.empty() )
             _ctx.failures().record( pkg, CommitPhase::Install, CommitSeverity::Error, reason );
         flushPending( _ctx.failures(), pkg, CommitPhase::Install, _pending );
@@ -613,9 +658,15 @@ void McpInstallReceive::report( const UserData & userData )
     // "in progress" for the whole lifetime of this line's report() call.
     const std::string pkg = classicRpmOutPackage( userData );
     if ( looksLikeScriptletFailure( line ) )
+    {
+        WAR << "Install: scriptlet failure detected for package=" << pkg << ": "
+            << logSnippet( line ) << std::endl;
         _ctx.failures().record( pkg, CommitPhase::Install, CommitSeverity::Warning, line );
+    }
     else
+    {
         pushPending( _pending, line );
+    }
 }
 
 // ─── McpRemoveReceive ────────────────────────────────────────────────────────
@@ -634,6 +685,8 @@ zypp::target::rpm::RemoveResolvableReport::Action
 McpRemoveReceive::problem( zypp::Resolvable::constPtr resolvable, Error /*error*/,
                           const std::string & description )
 {
+    ERR << "Remove: problem for package=" << resolvableName( resolvable ) << ": "
+        << logSnippet( description ) << std::endl;
     _ctx.failures().record( resolvableName( resolvable ), CommitPhase::Remove,
                             CommitSeverity::Error, description );
     return ABORT; // base class default, unchanged — see callbacks.h
@@ -644,6 +697,7 @@ void McpRemoveReceive::finish( zypp::Resolvable::constPtr resolvable, Error erro
     const std::string pkg = resolvableName( resolvable );
     if ( error != NO_ERROR )
     {
+        WAR << "Remove: step failed for package=" << pkg << std::endl;
         if ( !reason.empty() )
             _ctx.failures().record( pkg, CommitPhase::Remove, CommitSeverity::Error, reason );
         flushPending( _ctx.failures(), pkg, CommitPhase::Remove, _pending );
@@ -664,9 +718,15 @@ void McpRemoveReceive::report( const UserData & userData )
     // See McpInstallReceive::report() — same rationale for classicRpmOutPackage().
     const std::string pkg = classicRpmOutPackage( userData );
     if ( looksLikeScriptletFailure( line ) )
+    {
+        WAR << "Remove: scriptlet failure detected for package=" << pkg << ": "
+            << logSnippet( line ) << std::endl;
         _ctx.failures().record( pkg, CommitPhase::Remove, CommitSeverity::Warning, line );
+    }
     else
+    {
         pushPending( _pending, line );
+    }
 }
 
 // ─── SingleTrans-backend receivers ────────────────────────────────────────────
@@ -738,9 +798,14 @@ void McpInstallSAReceive::finish( zypp::Resolvable::constPtr resolvable, Error e
 {
     const std::string pkg = stepPackage( resolvable, _package );
     if ( error != NO_ERROR )
+    {
+        WAR << "InstallSA: step failed for package=" << pkg << std::endl;
         flushPending( _ctx.failures(), pkg, CommitPhase::Install, _pending );
+    }
     else
+    {
         _pending.clear(); // routine output from a package that installed cleanly — discard
+    }
     writeStepFinish( _ctx.transport(), "install", pkg, error != NO_ERROR );
     _package.clear();
 }
@@ -754,9 +819,15 @@ void McpInstallSAReceive::report( const UserData & userData )
     writeRpmOutput( _ctx.transport(), "install", _package, line );
 
     if ( looksLikeScriptletFailure( line ) )
+    {
+        WAR << "InstallSA: scriptlet failure detected for package=" << _package << ": "
+            << logSnippet( line ) << std::endl;
         _ctx.failures().record( _package, CommitPhase::Install, CommitSeverity::Warning, line );
+    }
     else
+    {
         pushPending( _pending, line );
+    }
 }
 
 void McpInstallSAReceive::reportend()
@@ -781,9 +852,14 @@ void McpRemoveSAReceive::finish( zypp::Resolvable::constPtr resolvable, Error er
 {
     const std::string pkg = stepPackage( resolvable, _package );
     if ( error != NO_ERROR )
+    {
+        WAR << "RemoveSA: step failed for package=" << pkg << std::endl;
         flushPending( _ctx.failures(), pkg, CommitPhase::Remove, _pending );
+    }
     else
+    {
         _pending.clear();
+    }
     writeStepFinish( _ctx.transport(), "remove", pkg, error != NO_ERROR );
     _package.clear();
 }
@@ -797,9 +873,15 @@ void McpRemoveSAReceive::report( const UserData & userData )
     writeRpmOutput( _ctx.transport(), "remove", _package, line );
 
     if ( looksLikeScriptletFailure( line ) )
+    {
+        WAR << "RemoveSA: scriptlet failure detected for package=" << _package << ": "
+            << logSnippet( line ) << std::endl;
         _ctx.failures().record( _package, CommitPhase::Remove, CommitSeverity::Warning, line );
+    }
     else
+    {
         pushPending( _pending, line );
+    }
 }
 
 void McpRemoveSAReceive::reportend()
@@ -861,6 +943,7 @@ void McpCommitScriptSAReceive::finish( zypp::Resolvable::constPtr, Error error, 
 
     if ( error == CRITICAL )
     {
+        ERR << "Script: " << _scriptType << " CRITICAL for package=" << _package << std::endl;
         _ctx.failures().record( _package, CommitPhase::Script, CommitSeverity::Error,
             std::string( _scriptType ) + " script " + severity );
         flushPending( _ctx.failures(), _package, CommitPhase::Script, _pending );
@@ -868,8 +951,11 @@ void McpCommitScriptSAReceive::finish( zypp::Resolvable::constPtr, Error error, 
     else
     {
         if ( error == WARN )
+        {
+            WAR << "Script: " << _scriptType << " WARN for package=" << _package << std::endl;
             _ctx.failures().record( _package, CommitPhase::Script, CommitSeverity::Warning,
                 std::string( _scriptType ) + " script " + severity );
+        }
         _pending.clear();
     }
 
@@ -898,9 +984,15 @@ void McpCommitScriptSAReceive::report( const UserData & userData )
     writeRpmOutput( _ctx.transport(), "script", _package, line );
 
     if ( looksLikeScriptletFailure( line ) )
+    {
+        WAR << "Script: scriptlet failure detected for package=" << _package << ": "
+            << logSnippet( line ) << std::endl;
         _ctx.failures().record( _package, CommitPhase::Script, CommitSeverity::Warning, line );
+    }
     else
+    {
         pushPending( _pending, line );
+    }
 }
 
 void McpCommitScriptSAReceive::reportend()
@@ -936,6 +1028,7 @@ void McpTransactionSAReceive::finish( Error error, const UserData & )
 {
     if ( error != NO_ERROR )
     {
+        ERR << "TransactionSA: phase=" << _name << " failed" << std::endl;
         _ctx.failures().record( "", CommitPhase::Transaction, CommitSeverity::Error, _name + " failed" );
         flushPending( _ctx.failures(), "", CommitPhase::Transaction, _pending );
     }
@@ -970,9 +1063,15 @@ void McpTransactionSAReceive::report( const UserData & userData )
     _ctx.transport().writeFrame( frame.asJSON() );
 
     if ( looksLikeScriptletFailure( line ) )
+    {
+        WAR << "TransactionSA: scriptlet failure detected in phase=" << _name << ": "
+            << logSnippet( line ) << std::endl;
         _ctx.failures().record( "", CommitPhase::Transaction, CommitSeverity::Warning, line );
+    }
     else
+    {
         pushPending( _pending, line );
+    }
 }
 
 void McpTransactionSAReceive::reportend()
@@ -996,9 +1095,14 @@ void McpCleanupSAReceive::progress( int value, const UserData & )
 void McpCleanupSAReceive::finish( Error error, const UserData & )
 {
     if ( error != NO_ERROR )
+    {
+        WAR << "CleanupSA: step failed for " << _nvra << std::endl;
         flushPending( _ctx.failures(), _nvra, CommitPhase::Cleanup, _pending );
+    }
     else
+    {
         _pending.clear();
+    }
     writeStepFinish( _ctx.transport(), "cleanup", _nvra, error != NO_ERROR );
     _nvra.clear();
 }
@@ -1012,9 +1116,15 @@ void McpCleanupSAReceive::report( const UserData & userData )
     writeRpmOutput( _ctx.transport(), "cleanup", _nvra, line );
 
     if ( looksLikeScriptletFailure( line ) )
+    {
+        WAR << "CleanupSA: scriptlet failure detected for " << _nvra << ": "
+            << logSnippet( line ) << std::endl;
         _ctx.failures().record( _nvra, CommitPhase::Cleanup, CommitSeverity::Warning, line );
+    }
     else
+    {
         pushPending( _pending, line );
+    }
 }
 
 void McpCleanupSAReceive::reportend()
@@ -1062,6 +1172,8 @@ McpDownloadReceive::problem( zypp::Resolvable::constPtr resolvable, Error /*erro
     // entirely (the base implementation discards it). Must always return
     // ABORT unchanged: the return value genuinely drives libzypp's control
     // flow here (RETRY/IGNORE/ABORT), unlike a pure sink.
+    ERR << "Download: problem for package=" << resolvableName( resolvable ) << ": "
+        << logSnippet( description ) << std::endl;
     _ctx.failures().record( resolvableName( resolvable ), CommitPhase::Download,
                             CommitSeverity::Error, description );
     return ABORT;
@@ -1070,8 +1182,12 @@ McpDownloadReceive::problem( zypp::Resolvable::constPtr resolvable, Error /*erro
 void McpDownloadReceive::finish( zypp::Resolvable::constPtr resolvable, Error error, const std::string & reason )
 {
     if ( error != NO_ERROR && !reason.empty() )
+    {
+        WAR << "Download: finished with error, package=" << resolvableName( resolvable )
+            << ": " << logSnippet( reason ) << std::endl;
         _ctx.failures().record( resolvableName( resolvable ), CommitPhase::Download,
                                 CommitSeverity::Error, reason );
+    }
     writeStepFinish( _ctx.transport(), "download", resolvableName( resolvable ), error != NO_ERROR );
 }
 
@@ -1142,8 +1258,11 @@ void McpCommitPreloadReceive::fileStart( const zypp::Pathname & localfile, const
 void McpCommitPreloadReceive::finish( Result res, const zypp::callback::UserData & )
 {
     if ( res == MISS )
+    {
+        WAR << "Preload: some packages could not be provided" << std::endl;
         _ctx.failures().record( "", CommitPhase::Preload, CommitSeverity::Error,
                                 "some packages could not be provided" );
+    }
 
     _ctx.transport().writeFrame( zypp::json::Object{ {
         { "type",     "progress"            },
@@ -1186,7 +1305,10 @@ bool McpCommitActiveReceive::start( const UserData & )
     // require an explicit, well-formed {"ack":true}.
     auto ans = t.readFrame();
     if ( !ans )
+    {
+        WAR << "CommitActive: proxy died or pipe broken, aborting before transaction" << std::endl;
         return false; // proxy died / pipe broken — do not proceed uncontrolled
+    }
 
     try
     {
@@ -1200,17 +1322,26 @@ bool McpCommitActiveReceive::start( const UserData & )
         // never enters the transaction, so cancellation must remain honored
         // (McpDownloadReceive/McpCommitPreloadReceive's shouldAbortNow()).
         if ( proceed )
+        {
             pastPointOfNoReturn() = true;
+            MIL << "CommitActive: proceeding into RPM transaction" << std::endl;
+        }
+        else
+        {
+            WAR << "CommitActive: ack declined, aborting before transaction" << std::endl;
+        }
         return proceed;
     }
     catch ( const std::exception & )
     {
+        WAR << "CommitActive: malformed ack, aborting before transaction" << std::endl;
         return false; // malformed ack — fail closed
     }
 }
 
 void McpCommitActiveReceive::reportend()
 {
+    MIL << "CommitActive: transaction finished" << std::endl;
     _ctx.transport().writeFrame( zypp::json::Object{ {
         { "type",  "zypp_control"    },
         { "event", "commit_finished" }

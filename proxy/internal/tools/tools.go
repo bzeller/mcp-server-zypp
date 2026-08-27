@@ -34,10 +34,22 @@ func (rt *registeredTool) handle(ctx context.Context, req *mcp.CallToolRequest) 
 		makeFrameHandler(ctx, req),
 	)
 	if err != nil {
+		// No frame exists at all here (the worker itself failed to run,
+		// or the frame stream was malformed) — the Go error string is
+		// genuinely all there is to report.
 		return errorResult(err), nil
 	}
 	if result.Type == "error" {
-		return errorResult(fmt.Errorf("%s: %s", result.Code, result.Detail)), nil
+		// Pass the whole frame through, exactly as the success path
+		// below does. The worker's error frames (see
+		// worker/src/tools/transaction.cc: commitFailureToJson()) carry
+		// the actual diagnosis in "details"/"failed_installs"/
+		// "skipped_installs"/etc. - collapsing that down to just
+		// code+detail (as this used to do) discards everything
+		// CommitFailureLog exists to capture. The proxy is a protocol
+		// bridge and makes no decisions about this content, so it must
+		// not summarize it either.
+		return errorFrameResult(result.Raw), nil
 	}
 	return jsonResult(result.Raw), nil
 }
@@ -142,9 +154,23 @@ func jsonResult(raw json.RawMessage) *mcp.CallToolResult {
 	}
 }
 
+// errorResult is for transport-level failures only - cases where no worker
+// frame exists at all (worker.Invoke itself returned a Go error), so the
+// error string is genuinely all there is to report. For a worker-produced
+// error frame, use errorFrameResult instead to preserve its full structure.
 func errorResult(err error) *mcp.CallToolResult {
 	return &mcp.CallToolResult{
 		Content: []mcp.Content{&mcp.TextContent{Text: err.Error()}},
+		IsError: true,
+	}
+}
+
+// errorFrameResult passes a worker error frame through verbatim, marked as
+// an error for the MCP client. See its call site in handle() for why this
+// must not summarize the frame down to a shorter string.
+func errorFrameResult(raw json.RawMessage) *mcp.CallToolResult {
+	return &mcp.CallToolResult{
+		Content: []mcp.Content{&mcp.TextContent{Text: string(raw)}},
 		IsError: true,
 	}
 }
@@ -209,6 +235,14 @@ func handleElicitation(ctx context.Context, req *mcp.CallToolRequest, frame json
 			},
 		},
 	})
+	// err (a genuine transport/client failure) and "the client declined"
+	// are deliberately indistinguishable here — both fail closed to
+	// decline, which is the correct security posture (see GpgKeyGate: a
+	// client that can't or won't answer must never be treated as having
+	// approved). The cost is that err itself is silently discarded, so a
+	// real transport problem looks identical to a human clicking
+	// "decline" from this code's point of view. Revisit only if that
+	// ambiguity becomes a real diagnostic problem in practice.
 	if err != nil || elicitResult == nil || elicitResult.Action != "accept" {
 		return []byte(`{"answer":"decline"}`)
 	}
@@ -242,6 +276,17 @@ type progressFrame struct {
 	ScriptType string `json:"script_type,omitempty"`
 	Severity   string `json:"severity,omitempty"`
 	Name       string `json:"name,omitempty"`
+
+	// McpCommitPreloadReceive fields (worker/src/callbacks.cc) - the
+	// overall concurrent preload of all commit downloads, distinct from
+	// the per-package "download" action above.
+	Started       bool     `json:"started,omitempty"`
+	File          string   `json:"file,omitempty"`
+	URL           string   `json:"url,omitempty"`
+	DbpsAvg       *float64 `json:"dbps_avg,omitempty"`
+	DbpsCurrent   *float64 `json:"dbps_current,omitempty"`
+	BytesReceived *float64 `json:"bytes_received,omitempty"`
+	BytesRequired *float64 `json:"bytes_required,omitempty"`
 }
 
 // rpmLoglinePrefix mirrors SingleTransReport::loglevelPrefix() (ZYppCallbacks.h)
@@ -316,10 +361,34 @@ func progressMessage(pf progressFrame) (message string, percent, total float64, 
 		}
 		return message, percentOf(pf), 100, true
 
+	case "preload":
+		switch {
+		case pf.Finished && pf.Error:
+			message = "preload failed"
+		case pf.Finished:
+			message = "preload finished"
+		case pf.Started:
+			message = "preload started"
+		case pf.File != "":
+			message = fmt.Sprintf("preload: %s", pf.File)
+		default:
+			message = pf.Action
+		}
+		// Prefer the byte counters when both are present and meaningful —
+		// a more accurate progress signal than the percent field for a
+		// download that can span many packages at once. Falls back to the
+		// same percentOf()/100 pair every other action uses otherwise, so
+		// a bare "preload" frame with none of these fields set (e.g. the
+		// zero-value case) behaves exactly as before this field was added.
+		if pf.BytesReceived != nil && pf.BytesRequired != nil && *pf.BytesRequired > 0 {
+			return message, *pf.BytesReceived, *pf.BytesRequired, true
+		}
+		return message, percentOf(pf), 100, true
+
 	default:
-		// Covers install/remove/download/preload/cleanup — cleanup's
-		// Package field holds an NVRA string, which the generic
-		// "%s %s" (action, package) branch already renders sensibly.
+		// Covers install/remove/download/cleanup — cleanup's Package
+		// field holds an NVRA string, which the generic "%s %s" (action,
+		// package) branch already renders sensibly.
 		switch {
 		case pf.Finished && pf.Error:
 			message = fmt.Sprintf("%s failed", pf.Action)

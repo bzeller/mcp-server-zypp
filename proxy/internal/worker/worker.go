@@ -246,6 +246,14 @@ func invokeIO(ctx context.Context, stdin io.WriteCloser, stdout io.Reader, k kil
 			Event string `json:"event"`
 		}
 		if err := json.Unmarshal(body, &envelope); err != nil {
+			// Deliberately silent: a malformed frame from the worker is
+			// dropped with no trace back to the caller. Not a correctness
+			// bug (the alternative is aborting the whole call over one
+			// bad frame), but it does mean protocol drift between the
+			// worker and this loop is currently invisible. Revisit if
+			// that is ever suspected — this package has no logging
+			// framework wired in yet, so fixing it properly means adding
+			// one, not just a print statement here.
 			continue // skip malformed frames
 		}
 
@@ -314,6 +322,11 @@ func invokeIO(ctx context.Context, stdin io.WriteCloser, stdout io.Reader, k kil
 			if onFrame != nil {
 				onFrame(json.RawMessage(body))
 			}
+
+		// No default case: an unrecognised frame type is silently
+		// ignored rather than treated as an error. Same rationale and
+		// same caveat as the json.Unmarshal failure above — see its
+		// comment.
 		}
 	}
 

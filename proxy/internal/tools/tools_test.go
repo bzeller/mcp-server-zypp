@@ -6,6 +6,7 @@ package tools
 import "testing"
 
 func intp(v int) *int { return &v }
+func f64p(v float64) *float64 { return &v }
 
 func TestProgressMessage_InstallProgress(t *testing.T) {
 	msg, percent, total, ok := progressMessage(progressFrame{
@@ -173,5 +174,60 @@ func TestProgressMessage_UnknownActionNoPackage(t *testing.T) {
 	}
 	if percent != 0 {
 		t.Errorf("percent = %v, want 0", percent)
+	}
+}
+
+func TestProgressMessage_PreloadStarted(t *testing.T) {
+	msg, _, _, ok := progressMessage(progressFrame{Action: "preload", Started: true})
+	if !ok || msg != "preload started" {
+		t.Errorf("got msg=%q ok=%v", msg, ok)
+	}
+}
+
+func TestProgressMessage_PreloadFileStart(t *testing.T) {
+	msg, _, _, ok := progressMessage(progressFrame{Action: "preload", File: "/tmp/foo.rpm"})
+	if !ok || msg != "preload: /tmp/foo.rpm" {
+		t.Errorf("got msg=%q ok=%v", msg, ok)
+	}
+}
+
+func TestProgressMessage_PreloadUsesBytesWhenPresent(t *testing.T) {
+	msg, percent, total, ok := progressMessage(progressFrame{
+		Action: "preload", BytesReceived: f64p(512), BytesRequired: f64p(2048),
+	})
+	if !ok || msg != "preload" {
+		t.Errorf("got msg=%q ok=%v", msg, ok)
+	}
+	if percent != 512 || total != 2048 {
+		t.Errorf("percent/total = %v/%v, want 512/2048 (raw byte counts)", percent, total)
+	}
+}
+
+func TestProgressMessage_PreloadFallsBackToPercentWhenBytesRequiredZero(t *testing.T) {
+	// BytesRequired == 0 would make the byte-ratio meaningless (and, if
+	// ever used as a divisor downstream, a division by zero) — must fall
+	// back to the ordinary percent/100 pair instead.
+	msg, percent, total, ok := progressMessage(progressFrame{
+		Action: "preload", BytesReceived: f64p(0), BytesRequired: f64p(0), Percent: intp(7),
+	})
+	if !ok || msg != "preload" {
+		t.Errorf("got msg=%q ok=%v", msg, ok)
+	}
+	if percent != 7 || total != 100 {
+		t.Errorf("percent/total = %v/%v, want 7/100", percent, total)
+	}
+}
+
+func TestProgressMessage_PreloadFinishedFailed(t *testing.T) {
+	msg, _, _, ok := progressMessage(progressFrame{Action: "preload", Finished: true, Error: true})
+	if !ok || msg != "preload failed" {
+		t.Errorf("got msg=%q ok=%v", msg, ok)
+	}
+}
+
+func TestProgressMessage_PreloadFinishedSuccess(t *testing.T) {
+	msg, _, _, ok := progressMessage(progressFrame{Action: "preload", Finished: true})
+	if !ok || msg != "preload finished" {
+		t.Errorf("got msg=%q ok=%v", msg, ok)
 	}
 }

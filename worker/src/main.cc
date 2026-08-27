@@ -11,11 +11,16 @@
 #include <array>
 
 #include <zypp-core/base/LogControl.h>
+#include <zypp-core/base/Logger.h>
 #include <zypp-core/base/InputStream>
+#include <zypp-core/base/Exception.h>
 #include <zypp-core/parser/json.h>
 #include <zypp-core/parser/json/JsonValue.h>
 #include <zypp/ZYpp.h>
 #include <zypp/ZYppFactory.h>
+
+#undef  ZYPP_BASE_LOGGER_LOGGROUP
+#define ZYPP_BASE_LOGGER_LOGGROUP "zypp-mcp-tool"
 
 namespace
 {
@@ -85,6 +90,7 @@ namespace
         ::fwrite( out.data(), 1, out.size(), stdout );
         ::fputc( '\n', stdout );
         ::fflush( stdout );
+        DBG << "--list-tools: returning " << kRegistry.size() << " descriptors" << std::endl;
         return 0;
     }
 }
@@ -109,7 +115,10 @@ int main( int argc, char ** argv )
     // (and immediately unregisters) 13 callback receivers for a request
     // that never touches libzypp's callback machinery.
     if ( args.listTools )
+    {
+        DBG << "--list-tools requested" << std::endl;
         return cmdListTools();
+    }
 
     // Constructing this also connects every callback receiver (see
     // context.h: ToolContext owns McpCallbackScope as its final member) —
@@ -118,10 +127,13 @@ int main( int argc, char ** argv )
 
     if ( args.tool.empty() )
     {
+        ERR << "no --tool argument, aborting" << std::endl;
         ctx.transport().writeFrame( jsonError( "USAGE",
             "Usage: zypp-mcp-tool --list-tools | --tool <name> [--arg <json>]" ) );
         return 2;
     }
+
+    MIL << "tool invoked: " << args.tool << std::endl;
 
     // ─── Parse --arg once before acquiring the ZYpp lock ─────────────────────
     zypp::json::Object parsedArg;
@@ -150,10 +162,14 @@ int main( int argc, char ** argv )
         {
             try
             {
-                return td.execute( parsedArg, ctx );
+                const int retval = td.execute( parsedArg, ctx );
+                MIL << "tool " << args.tool << ": completed, exit=" << retval << std::endl;
+                return retval;
             }
             catch ( const zypp::ZYppFactoryException & e )
             {
+                ERR << "tool " << args.tool << ": ZYpp lock held by pid="
+                    << e.lockerPid() << " (" << e.lockerName() << ")" << std::endl;
                 ctx.transport().writeFrame( zypp::json::Object{ {
                     { "type",        "error"        },
                     { "code",        "LOCKED"       },
@@ -162,14 +178,36 @@ int main( int argc, char ** argv )
                 } }.asJSON() );
                 return 1;
             }
+            // Must come after ZYppFactoryException (more specific) and
+            // before the plain std::exception clause below (zypp::Exception
+            // derives from it) — see its own doc comment for why this
+            // exists as a separate branch at all.
+            catch ( const zypp::Exception & e )
+            {
+                // e.what() is only the top-level message. asUserHistory()
+                // additionally includes the full chained cause history
+                // (Exception.cc: asUserHistory() = asUserString() +
+                // historyAsString()) — the richest explanation libzypp can
+                // produce. This matters concretely here: both
+                // confirm_install.cc and confirm_remove.cc `throw;` an
+                // unrecognised commit failure back up to this handler, so
+                // this is often the only place that failure is ever
+                // reported at all.
+                const std::string history = e.asUserHistory();
+                ERR << "tool " << args.tool << ": unhandled zypp::Exception: " << history << std::endl;
+                ctx.transport().writeFrame( jsonError( "EXCEPTION", history ) );
+                return 1;
+            }
             catch ( const std::exception & e )
             {
+                ERR << "tool " << args.tool << ": unhandled exception: " << e.what() << std::endl;
                 ctx.transport().writeFrame( jsonError( "EXCEPTION", e.what() ) );
                 return 1;
             }
         }
     }
 
+    ERR << "unknown tool: " << args.tool << std::endl;
     ctx.transport().writeFrame( jsonError( "UNKNOWN_TOOL", args.tool ) );
     return 2;
 }

@@ -7,6 +7,9 @@
 
 #include <zypp-core/base/Logger.h>
 
+#undef  ZYPP_BASE_LOGGER_LOGGROUP
+#define ZYPP_BASE_LOGGER_LOGGROUP "zypp-mcp-tool"
+
 McpTransport::McpTransport()
 {
     // Disable buffering on stdout so each writeFrame reaches the proxy immediately.
