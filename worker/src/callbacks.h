@@ -7,6 +7,7 @@
 #include <zypp/ZYppCallbacks.h>
 #include <zypp/KeyRing.h>
 #include <zypp/Digest.h>
+#include <zypp-core/parser/json/JsonValue.h>
 
 // Forward-declared, not included: ToolContext (context.h) owns
 // McpCallbackScope and includes this header, so a full include here would
@@ -309,6 +310,19 @@ private:
 };
 
 // ─── Commit preload progress ──────────────────────────────────────────────────
+/// Builds the JSON payload for one McpCommitPreloadReceive::progress() call.
+/// Deliberately a free function taking only the same inputs progress()
+/// itself is given, decoupled from ToolContext/McpTransport, specifically so
+/// the deterministic bytesReceived/bytesRequired (libzypp's UserData key
+/// spelling) -> bytes_received/bytes_required (this worker's JSON key
+/// spelling) mapping can be unit-tested directly against a UserData the test
+/// constructs itself — see worker/tests/preloadprogress_test.cc. Whether a
+/// *real* download's UserData ever actually contains these keys is a
+/// separate, genuinely non-deterministic question of network timing, and is
+/// deliberately not asserted there or in e2e beyond "did progress() fire at
+/// all" (see tests/e2e/scenarios/commit_failure.py).
+zypp::json::Object preloadProgressFrame( int value, const zypp::callback::UserData & userData );
+
 /// Fires for the overall concurrent preload of all commit downloads — a
 /// single progress stream covering the whole batch, distinct from the
 /// per-package McpDownloadReceive above. Never aborts (progress always

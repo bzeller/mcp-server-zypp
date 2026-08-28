@@ -32,7 +32,22 @@ def main():
     results = {}
     for _, name, _ in sorted(pkgutil.iter_modules(scenarios.__path__)):
         step(f"Scenario suite: {name}")
-        mod = importlib.import_module(f"scenarios.{name}")
+        try:
+            mod = importlib.import_module(f"scenarios.{name}")
+        except BaseException as e:
+            # Import itself can fail (syntax error, missing dependency,
+            # etc.) — report it under this suite's name rather than
+            # letting it propagate unattributed, or silently pass if it
+            # happens to be a module with no run_scenario (see below).
+            print(f"SCENARIO SUITE '{name}' FAILED TO IMPORT: {e}", file=sys.stderr)
+            results[name] = False
+            continue
+        if not hasattr(mod, "run_scenario"):
+            # Not every module under scenarios/ need be a scenario suite —
+            # e.g. a future shared-helper module. Skip silently rather than
+            # reporting a spurious FAIL for something that was never meant
+            # to be run.
+            continue
         try:
             mod.run_scenario()
             results[name] = True

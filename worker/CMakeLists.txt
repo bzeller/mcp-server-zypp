@@ -92,9 +92,13 @@ install(TARGETS zypp-mcp-tool RUNTIME DESTINATION ${CMAKE_INSTALL_LIBEXECDIR}/mc
 # wouldn't make the underlying rpm db/filesystem writes behave reliably anyway.
 find_package(Boost REQUIRED COMPONENTS unit_test_framework)
 
-add_executable(zypp-mcp-tool-tests tests/transaction_test.cc)
+add_executable(zypp-mcp-tool-tests
+  tests/transaction_test.cc
+  tests/preloadprogress_test.cc
+)
 target_link_libraries(zypp-mcp-tool-tests PRIVATE zypp-mcp-tool-objlib Boost::unit_test_framework)
 target_compile_definitions(zypp-mcp-tool-tests PRIVATE
+  BOOST_TEST_DYN_LINK
   MCP_TEST_TESTDATA_DIR="${CMAKE_CURRENT_SOURCE_DIR}/../tests/testdata")
 
 add_test(NAME mcp_worker_cpp_tests COMMAND zypp-mcp-tool-tests --catch_system_errors=no)
@@ -108,6 +112,7 @@ add_executable(zypp-mcp-gpgkeygate-tests
 )
 target_link_libraries(zypp-mcp-gpgkeygate-tests PRIVATE Boost::unit_test_framework)
 target_compile_features(zypp-mcp-gpgkeygate-tests PRIVATE cxx_std_17)
+target_compile_definitions(zypp-mcp-gpgkeygate-tests PRIVATE BOOST_TEST_DYN_LINK)
 
 add_test(NAME mcp_gpgkeygate_tests COMMAND zypp-mcp-gpgkeygate-tests --catch_system_errors=no)
 
@@ -120,5 +125,6 @@ add_executable(zypp-mcp-commitfailurelog-tests
 )
 target_link_libraries(zypp-mcp-commitfailurelog-tests PRIVATE Boost::unit_test_framework)
 target_compile_features(zypp-mcp-commitfailurelog-tests PRIVATE cxx_std_17)
+target_compile_definitions(zypp-mcp-commitfailurelog-tests PRIVATE BOOST_TEST_DYN_LINK)
 
 add_test(NAME mcp_commitfailurelog_tests COMMAND zypp-mcp-commitfailurelog-tests --catch_system_errors=no)

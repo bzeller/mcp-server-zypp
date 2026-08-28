@@ -7,7 +7,6 @@
 // reordered or weakened for testability). The gate logic itself needs no
 // root privileges and no real commit() — it's pure ResPool inspection, so
 // it belongs in a real, no-root-needed unit test instead.
-#define BOOST_TEST_DYN_LINK
 #define BOOST_TEST_MODULE TransactionLicenseTests
 #include <boost/test/unit_test.hpp>
 

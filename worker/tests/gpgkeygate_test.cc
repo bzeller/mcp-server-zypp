@@ -1,5 +1,4 @@
 // Pure unit tests for GpgKeyGate — no zypp, no fixture, no subprocess.
-#define BOOST_TEST_DYN_LINK
 #define BOOST_TEST_MODULE GpgKeyGateTests
 #include <boost/test/unit_test.hpp>
 

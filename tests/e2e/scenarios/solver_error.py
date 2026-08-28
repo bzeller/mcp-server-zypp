@@ -1,0 +1,59 @@
+"""
+Solver problem detail — plan_install's SOLVER_ERROR response should carry
+each problem's full detail text and its proposed solutions, not just a
+one-line description (worker/src/tools/tools.h: solverProblemsToJson()).
+Previously only "description" was emitted per problem; both "details" and
+the entire "solutions" array were silently dropped.
+
+Solve-only, no commit — the fastest scenario in the suite and independent
+of everything else here.
+"""
+import json
+from pathlib import Path
+
+from e2e_common import build_test_rpm, call_tool, fail, publish_rpm_md_repo, step
+
+RPMBUILD_TOPDIR = Path("/tmp/rpmbuild-solver-error")
+REPO_DIR = Path("/repo-solver-error")
+
+PKG = "solver-unsat-pkg"
+
+
+def run_scenario():
+    step("Build a package requiring a capability nothing provides")
+    rpm = build_test_rpm(RPMBUILD_TOPDIR, PKG, "1.0",
+                          requires="this-capability-does-not-exist")
+
+    step("Publish it as an rpm-md repo")
+    publish_rpm_md_repo(REPO_DIR, [rpm], "solver-test-repo")
+
+    step("plan_install must report SOLVER_ERROR with full problem detail")
+    result = call_tool("plan_install", {"package": PKG, "repo": "solver-test-repo"},
+                        log_tag="solver-error")
+    print(json.dumps(result, indent=2))
+
+    if result.get("code") != "SOLVER_ERROR":
+        fail(f"expected SOLVER_ERROR, got {result.get('code')!r}")
+
+    problems = result.get("problems", [])
+    if not problems:
+        fail("expected at least one solver problem, got none")
+
+    for p in problems:
+        if not p.get("description"):
+            fail(f"solver problem missing non-empty description: {p}")
+
+    # The actual regression guard: at least one problem must carry a
+    # non-empty "solutions" array, each entry with its own description —
+    # the actionable part of a solver conflict that was previously dropped
+    # entirely (see worker/src/tools/tools.h: solverProblemsToJson()).
+    found_solution = False
+    for p in problems:
+        for s in p.get("solutions", []):
+            if s.get("description"):
+                found_solution = True
+    if not found_solution:
+        fail(f"expected at least one problem with a non-empty solutions[] "
+             f"array (each with a description), got: {problems}")
+
+    print("PASS: SOLVER_ERROR includes problem detail and solutions")

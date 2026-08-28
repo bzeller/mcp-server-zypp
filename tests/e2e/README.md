@@ -153,6 +153,51 @@ An unsigned package with `pkgGpgCheckIsMandatory() == false` is silently
 accepted by `packageSigCheck()` (`CHK_NOSIG` relaxed to `CHK_OK`) — no
 elicitation, no abort, regardless of signing.
 
+### `solver_error`: solver problem detail
+
+`plan_install`'s `SOLVER_ERROR` response should carry each problem's full
+detail text and its proposed solutions, not just a one-line description
+(`worker/src/tools/tools.h: solverProblemsToJson()`). Solves against a
+package with a `Requires:` on a capability nothing provides, and asserts
+that at least one reported problem carries a non-empty `solutions` array
+— the actionable part of a solver conflict that was previously dropped
+entirely. Solve-only, no commit — the fastest scenario in the suite.
+
+### `commit_failure`: structured commit diagnostics
+
+`confirm_install`'s structured error/warning reporting
+(`CommitFailureLog`, `worker/src/commitfailurelog.h/.cc` and
+`worker/src/tools/transaction.cc`). Three cases:
+
+1. A failing `%post` scriptlet is reported as a `warnings` entry on an
+   otherwise-successful install — not a transaction failure. Run once per
+   rpm transaction backend (classic and SingleTrans), since the two detect
+   the same failure through entirely separate callback receivers.
+2. A package file deleted after the repo is published produces a
+   populated commit `details[]` on the **classic serial download** path.
+3. The same failure on the **parallel preload download** path.
+
+Both the rpm transaction backend and the download backend are pinned
+explicitly via environment variables rather than relying on their
+defaults, which are distro- and libzypp-build-dependent:
+
+- `ZYPP_SINGLE_RPMTRANS` — classic vs. SingleTrans rpm transaction backend.
+- `ZYPP_PCK_PRELOAD` — classic serial vs. parallel preload downloads. The
+  preload path additionally requires an **HTTP-served** repo — it never
+  engages for a `dir:`/plaindir repo regardless of this variable, since
+  the preloader only accepts a downloading URL scheme
+  (`commitpackagepreloader.cc`).
+
+Case 2 and 3's packages are published via real `createrepo_c`-generated
+rpm-md metadata rather than a bare directory of RPMs, even for the local
+case where libzypp would otherwise happily accept one (`RPMPLAINDIR`) — a
+plaindir repo refreshes unconditionally on every system load, which would
+silently turn the intended download failure into a solver error instead
+once the RPM is deleted out from under it.
+
+See `.opencode/plans/mcp-e2e-commit-diagnostics.md` for the full,
+source-verified rationale behind every pinning decision above.
+
 ## Adding another e2e scenario
 
 Add `scenarios/<name>.py` defining a `run_scenario()` function that raises

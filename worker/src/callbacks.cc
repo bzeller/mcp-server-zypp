@@ -1201,7 +1201,7 @@ void McpCommitPreloadReceive::start( const zypp::callback::UserData & )
     } }.asJSON() );
 }
 
-bool McpCommitPreloadReceive::progress( int value, const zypp::callback::UserData & userData )
+zypp::json::Object preloadProgressFrame( int value, const zypp::callback::UserData & userData )
 {
     zypp::json::Object frame = {
         { "type",    "progress" },
@@ -1227,7 +1227,12 @@ bool McpCommitPreloadReceive::progress( int value, const zypp::callback::UserDat
     if ( bytesRequired >= 0.0 )
         frame.add( "bytes_required", bytesRequired );
 
-    _ctx.transport().writeFrame( frame.asJSON() );
+    return frame;
+}
+
+bool McpCommitPreloadReceive::progress( int value, const zypp::callback::UserData & userData )
+{
+    _ctx.transport().writeFrame( preloadProgressFrame( value, userData ).asJSON() );
 
     // Returning false marks the preload dispatcher's downloads as missed
     // and cancels it (commitpackagepreloader.cc) — only honor that while

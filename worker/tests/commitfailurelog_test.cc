@@ -1,5 +1,4 @@
 // Pure unit tests for CommitFailureLog — no zypp, no fixture, no subprocess.
-#define BOOST_TEST_DYN_LINK
 #define BOOST_TEST_MODULE CommitFailureLogTests
 #include <boost/test/unit_test.hpp>
 
