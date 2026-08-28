@@ -175,9 +175,9 @@ func Invoke(ctx context.Context, workerPath, tool, arg string, onFrame func(fram
 // first (safe — k is permanently suppressed before the worker is released
 // to proceed).
 //
-// Returns the last "result"/"error" frame seen, or an error if the frame
-// stream itself was malformed (never for "worker declined to be killed" —
-// that is not an error, just an accepted outcome).
+// Returns the last "result"/"error" frame seen. Malformed non-final frames are skipped,
+// so the caller only observes an error if no final result frame is produced or
+// if a final frame cannot be parsed.
 func invokeIO(ctx context.Context, stdin io.WriteCloser, stdout io.Reader, k killer, gracePeriod time.Duration, onFrame func(frame json.RawMessage) []byte) (*Result, error) {
 	// stillCancellable is latched to false on the "zypp_control"/
 	// "commit_active" frame. Protected by mu.

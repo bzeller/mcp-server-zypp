@@ -419,8 +419,8 @@ func percentOf(pf progressFrame) float64 {
 // notifications/progress message. No-op if the client did not request
 // progress (no progressToken) or if the session is unavailable, or if the
 // frame carries nothing worth forwarding (progressMessage's ok=false).
-// Errors from the notification itself are logged, not surfaced — progress
-// is best-effort and must never fail the underlying tool call.
+// Errors from the notification itself are ignored — progress is best-effort
+// and must never fail the underlying tool call.
 func handleProgress(ctx context.Context, req *mcp.CallToolRequest, progressToken any, frame json.RawMessage) {
 	if progressToken == nil || req.Session == nil {
 		return
