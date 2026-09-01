@@ -12,14 +12,15 @@
 #include <zypp/PoolItem.h>
 #include <zypp/Capability.h>
 #include <zypp/ResStatus.h>
-#include <zypp/base/Algorithm.h>
 #include <zypp/ResPoolProxy.h>
 #include <zypp/ui/Selectable.h>
+
+#include "../solver/requester.h"
+#include "../solver/apply.h"
 
 #include <cstdint>
 #include <iomanip>
 #include <sstream>
-#include <functional>
 
 using namespace zypp;
 
@@ -97,6 +98,15 @@ const zypp::json::Object & removeSchemaProperties()
     return props;
 }
 
+// ─── Solver option accessors ──────────────────────────────────────────────────
+
+bool requestsAllowDowngrade( const zypp::json::Object & arg )
+{
+    if ( !arg.contains("solver_options") )
+        return false;
+    return validate::optionalBool( arg.value("solver_options").asObject(), "allow_downgrade" );
+}
+
 // ─── setupInstall ─────────────────────────────────────────────────────────────
 
 bool setupInstall( const zypp::json::Object & arg,
@@ -119,53 +129,78 @@ bool setupInstall( const zypp::json::Object & arg,
     if ( noRecommends )
         resolver->setOnlyRequires( true );
 
+    // Mirrored onto solverequest::Options below wherever the selection
+    // algorithm itself (as opposed to the resolver) reads the same
+    // permission — downgrade in particular has both a resolver-level and
+    // a selection-level switch that need to agree.
+    solverequest::Options solverOpts;
+
+    if ( requestsAllowDowngrade( arg ) )
+    {
+        resolver->setAllowDowngrade( true );
+        solverOpts.oldpackage = true;
+    }
+
     if ( arg.contains("solver_options") )
     {
         const auto & opts = arg.value("solver_options").asObject();
-        if ( validate::optionalBool( opts, "allow_downgrade"    ) ) resolver->setAllowDowngrade( true );
         if ( validate::optionalBool( opts, "allow_name_change"  ) ) resolver->setAllowNameChange( true );
         if ( validate::optionalBool( opts, "allow_arch_change"  ) ) resolver->setAllowArchChange( true );
-        if ( validate::optionalBool( opts, "allow_vendor_change") ) resolver->setAllowVendorChange( true );
+        if ( validate::optionalBool( opts, "allow_vendor_change") )
+        {
+            resolver->setAllowVendorChange( true );
+            solverOpts.allowVendorChange = true;
+        }
     }
+
+    // byCapability maps directly onto the selection algorithm's own
+    // mutually-exclusive forceByCap/forceByName switch — there is no
+    // separate "raw resolver job" path here anymore. Letting
+    // solverequest::Requester own the capability case too (rather than a
+    // bare resolver->addRequire() special-cased in this file) gives it
+    // the same already-installed/not-found handling as the by-name path,
+    // instead of silently deferring an unresolvable capability all the
+    // way to a generic solver error at resolvePool() time.
+    if ( byCapability )
+        solverOpts.setForceByCap( true );
+    else
+        solverOpts.setForceByName( true );
 
     const ResKind kind = kindFromString( type );
 
-    if ( byCapability )
+    solverequest::PackageSpec spec;
+    spec.orig_str   = pkg;
+    spec.parsed_cap = Capability( pkg, kind );
+    spec.repo_alias = repo;
+
+    solverequest::Requester requester( solverOpts );
+    requester.submit( zypp->pool(), { solverequest::Operation::Install, { spec }, {} } );
+
+    if ( requester.hasFeedback( solverequest::Feedback::NOT_FOUND_NAME )
+      || requester.hasFeedback( solverequest::Feedback::NOT_FOUND_CAP ) )
     {
-        resolver->addRequire( Capability( pkg, kind ) );
+        const std::string detail = repo.empty()
+            ? "Package '" + pkg + "' not found in any repository."
+            : "Package '" + pkg + "' not found in repository '" + repo + "'.";
+
+        MIL << detail << std::endl;
+
+        t.writeFrame( zypp::json::Object{ {
+            { "type",   "error"    },
+            { "code",   "NOT_FOUND"},
+            { "tool",   toolName   },
+            { "detail", detail     }
+        } }.asJSON() );
+        return false;
     }
-    else
-    {
-        PoolItem found;
-        auto findAvailable = [&]( const PoolItem & pi ) -> bool {
-            if ( pi.status().isInstalled() )                                 return true;
-            if ( !repo.empty() &&
-                 pi.satSolvable().repository().info().alias() != repo )      return true;
-            found = pi;
-            return false;
-        };
-        invokeOnEach( zypp->pool().byIdentBegin( kind, pkg ),
-                      zypp->pool().byIdentEnd(   kind, pkg ),
-                      std::ref(findAvailable) );
 
-        if ( !found )
-        {
-            const std::string detail = repo.empty()
-                ? "Package '" + pkg + "' not found in any repository."
-                : "Package '" + pkg + "' not found in repository '" + repo + "'.";
-
-            MIL << detail << std::endl;
-
-            t.writeFrame( zypp::json::Object{ {
-                { "type",   "error"    },
-                { "code",   "NOT_FOUND"},
-                { "tool",   toolName   },
-                { "detail", detail     }
-            } }.asJSON() );
-            return false;
-        }
-        found.status().setToBeInstalled( ResStatus::USER );
-    }
+    // Applies exactly what was selected — a direct status mutation for an
+    // unlocked item, or a solver requirement/conflict job (never a direct
+    // mutation) for a locked one, so a lock surfaces as a solver conflict
+    // instead of being silently cleared. Candidate selection itself is
+    // vendor/priority/version/lock-aware rather than "whatever the pool
+    // happens to iterate first".
+    solverequest::applySelections( resolver, requester.selections() );
     return true;
 }
 
@@ -189,40 +224,60 @@ SetupRemoveResult setupRemove( const zypp::json::Object & arg,
     if ( cleanDeps )
         resolver->setCleandepsOnRemove( true );
 
+    // Unconditional, and deliberately not a caller-settable option: a
+    // removal must never pull in newly recommended packages as a solver
+    // side effect. Mirrors zypper, which overrides both zypper.conf and
+    // any --recommends flag for the remove command specifically
+    // ("never install recommends when removing packages").
+    resolver->setOnlyRequires( true );
+
     const ResKind kind = kindFromString( type );
 
+    // byCapability maps onto the selection algorithm's own mutually
+    // exclusive forceByCap/forceByName switch — see setupInstall() above
+    // for why both branches go through solverequest::Requester rather
+    // than one of them bypassing it with a bare resolver job.
+    solverequest::Options solverOpts;
     if ( byCapability )
-    {
-        resolver->addConflict( Capability( pkg, kind ) );
-    }
+        solverOpts.setForceByCap( true );
     else
-    {
-        PoolItem found;
-        auto findInstalled = [&]( const PoolItem & pi ) -> bool {
-            if ( !pi.status().isInstalled() )                                return true;
-            if ( !repo.empty() &&
-                 pi.satSolvable().repository().info().alias() != repo )      return true;
-            found = pi;
-            return false;
-        };
-        invokeOnEach( zypp->pool().byIdentBegin( kind, pkg ),
-                      zypp->pool().byIdentEnd(   kind, pkg ),
-                      std::ref(findInstalled) );
+        solverOpts.setForceByName( true );
 
-        if ( !found )
-        {
-            // Not installed — empty plan result, not an error.
-            t.writeFrame( zypp::json::Object{ {
-                { "type", "result"  },
-                { "tool", toolName  },
-                { "plan", zypp::json::Object{ {
-                    { "to_remove", zypp::json::Array{} }
-                } } }
-            } }.asJSON() );
-            return SetupRemoveResult::NotInstalled;
-        }
-        found.status().setToBeUninstalled( ResStatus::USER );
+    solverequest::PackageSpec spec;
+    spec.orig_str   = pkg;
+    spec.parsed_cap = Capability( pkg, kind );
+    spec.repo_alias = repo;
+    // Note: repo restriction has no effect on removal regardless — an
+    // installed item's own repository is always "@System" by the time it
+    // is in the pool, so there is no origin repo left to filter on. Set
+    // here purely for forward-compatibility should that ever change;
+    // currently every removal ignores it exactly as it does above.
+
+    solverequest::Requester requester( solverOpts );
+    requester.submit( zypp->pool(), { solverequest::Operation::Remove, {}, { spec } } );
+
+    // Every "nothing to remove" outcome (name/capability not found at
+    // all, or found but nothing currently installed satisfies it) is
+    // treated identically: an empty plan, not an error — matching this
+    // tool's existing "removing something not installed is a no-op"
+    // contract, which never distinguished "doesn't exist" from "not
+    // installed" either.
+    if ( requester.hasFeedback( solverequest::Feedback::NOT_FOUND_NAME )
+      || requester.hasFeedback( solverequest::Feedback::NOT_FOUND_CAP )
+      || requester.hasFeedback( solverequest::Feedback::NOT_INSTALLED )
+      || requester.hasFeedback( solverequest::Feedback::NO_INSTALLED_PROVIDER ) )
+    {
+        t.writeFrame( zypp::json::Object{ {
+            { "type", "result"  },
+            { "tool", toolName  },
+            { "plan", zypp::json::Object{ {
+                { "to_remove", zypp::json::Array{} }
+            } } }
+        } }.asJSON() );
+        return SetupRemoveResult::NotInstalled;
     }
+
+    solverequest::applySelections( resolver, requester.selections() );
     return SetupRemoveResult::Ok;
 }
 

@@ -29,6 +29,20 @@ class McpTransport;
 const zypp::json::Object & installSchemaProperties();
 const zypp::json::Object & removeSchemaProperties();
 
+// ─── Solver option accessors ──────────────────────────────────────────────────
+
+/// Whether the caller passed solver_options.allow_downgrade.
+///
+/// Exists because a downgrade needs permission at *two* independent
+/// layers and setupInstall() can only grant one of them: the resolver
+/// (Resolver::setAllowDowngrade, applied inside setupInstall) decides
+/// whether a downgrade may be *planned*, while ZYppCommitPolicy::
+/// allowDowngrade decides whether rpm will *execute* it. Granting only
+/// the first produces a plan that then fails at commit. confirm_install
+/// reads this to set the second; sharing one accessor keeps the two
+/// readings from drifting apart.
+bool requestsAllowDowngrade( const zypp::json::Object & arg );
+
 // ─── setupInstall ─────────────────────────────────────────────────────────────
 // Parse install args, apply solver options, create the install job.
 // Returns true on success.

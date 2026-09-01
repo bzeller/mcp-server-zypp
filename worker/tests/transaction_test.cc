@@ -85,6 +85,63 @@ namespace
     }
 }
 
+// ─── Solver option plumbing ───────────────────────────────────────────────────
+
+BOOST_AUTO_TEST_CASE( allow_downgrade_is_read_from_solver_options )
+{
+    // Pure JSON accessor, no pool needed. Guards the two-layer downgrade
+    // permission: setupInstall() applies the resolver half and
+    // confirm_install() the commit half, both from this one reading — if
+    // they ever diverge, a downgrade is planned and then rejected by rpm.
+    BOOST_CHECK( !requestsAllowDowngrade( zypp::json::Object{} ) );
+
+    BOOST_CHECK( !requestsAllowDowngrade( zypp::json::Object{ {
+        { "package", std::string( "x" ) }
+    } } ) );
+
+    BOOST_CHECK( !requestsAllowDowngrade( zypp::json::Object{ {
+        { "solver_options", zypp::json::Object{ {
+            { "allow_vendor_change", true }
+        } } }
+    } } ) );
+
+    BOOST_CHECK( requestsAllowDowngrade( zypp::json::Object{ {
+        { "solver_options", zypp::json::Object{ {
+            { "allow_downgrade", true }
+        } } }
+    } } ) );
+
+    BOOST_CHECK( !requestsAllowDowngrade( zypp::json::Object{ {
+        { "solver_options", zypp::json::Object{ {
+            { "allow_downgrade", false }
+        } } }
+    } } ) );
+}
+
+BOOST_FIXTURE_TEST_CASE( remove_never_installs_recommends, ResetPoolFixture )
+{
+    // A removal must never pull in newly recommended packages as a solver
+    // side effect. Unconditional and not caller-settable, matching zypper,
+    // which overrides both zypper.conf and any --recommends flag for the
+    // remove command specifically.
+    McpTransport t;
+    zypp::ZYpp::Ptr zypp = loadSystem( testcase( "tc-simple" ) );
+
+    // Establish the precondition explicitly rather than asserting a
+    // default: onlyRequires is a TriBool that falls back to zypp.conf's
+    // solver.onlyRequires when unset, so an environment configuring it
+    // true would otherwise make this test silently vacuous.
+    zypp->resolver()->setOnlyRequires( false );
+    BOOST_REQUIRE( !zypp->resolver()->onlyRequires() );
+
+    const zypp::json::Object arg{ { { "package", std::string( "pkg-installed" ) } } };
+    BOOST_REQUIRE( setupRemove( arg, zypp, "test", t ) == SetupRemoveResult::Ok );
+
+    BOOST_CHECK( zypp->resolver()->onlyRequires() );
+}
+
+// ─── License confirmation ─────────────────────────────────────────────────────
+
 BOOST_FIXTURE_TEST_CASE( fresh_install_surfaces_license, ResetPoolFixture )
 {
     McpTransport t;

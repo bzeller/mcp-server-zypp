@@ -104,6 +104,11 @@ int tool_confirm_install( const zypp::json::Object & arg, ToolContext & ctx )
 
     ZYppCommitPolicy policy;
     policy.syncPoolAfterCommit( true );
+    // Commit-level counterpart to the resolver-level permission
+    // setupInstall() already applied — rpm rejects a downgrade without
+    // this even when the solver planned one. See transaction.h:
+    // requestsAllowDowngrade().
+    policy.allowDowngrade( requestsAllowDowngrade( arg ) );
 
     // writeCommitFailure reports why, not just that, a commit failed — see
     // transaction.h: commitFailureToJson(). COMMIT_FAILED vs
