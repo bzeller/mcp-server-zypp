@@ -44,6 +44,14 @@ set(WORKER_HEADERS
   src/tools/tools.h
   src/tools/validate.h
   src/tools/transaction.h
+  src/solver/packagespec.h
+  src/solver/feedback.h
+  src/solver/patchfilter.h
+  src/solver/options.h
+  src/solver/selection.h
+  src/solver/packageargs.h
+  src/solver/requester.h
+  src/solver/apply.h
 )
 
 set(WORKER_LIB_SOURCES
@@ -63,6 +71,11 @@ set(WORKER_LIB_SOURCES
   src/tools/plan_remove.cc
   src/tools/confirm_install.cc
   src/tools/confirm_remove.cc
+  src/solver/options.cc
+  src/solver/feedback.cc
+  src/solver/packageargs.cc
+  src/solver/requester.cc
+  src/solver/apply.cc
 )
 
 add_library(zypp-mcp-tool-objlib OBJECT ${WORKER_HEADERS} ${WORKER_LIB_SOURCES})
@@ -128,3 +141,34 @@ target_compile_features(zypp-mcp-commitfailurelog-tests PRIVATE cxx_std_17)
 target_compile_definitions(zypp-mcp-commitfailurelog-tests PRIVATE BOOST_TEST_DYN_LINK)
 
 add_test(NAME mcp_commitfailurelog_tests COMMAND zypp-mcp-commitfailurelog-tests --catch_system_errors=no)
+
+# ─── Ported SolverRequester tests ──────────────────────────────────────────────
+# Ported from zypper/tests/SolverRequester_test.cc — see
+# worker/tests/solver/solverrequester_test.cc's header comment for exactly
+# what changed vs. upstream (nothing in the test bodies themselves). Needs
+# the full libzypp toolchain and a real RepoManager against real rpm-md/
+# yast2 repo metadata (worker/tests/solverrequester-data/, copied from
+# zypper/tests/data/) — no root, no network, no live system. Its own
+# target rather than reusing zypp-mcp-tool-objlib: unrelated translation
+# units there would only slow down this test's rebuild.
+#
+# BOOST_TEST_DYN_LINK + BOOST_TEST_MAIN mirror zypper's own
+# tests/CMakeLists.txt: ADD_TESTS() macro exactly — the ported .cc file
+# relies on Boost.Test's auto-generated main() via these defines rather
+# than declaring its own BOOST_TEST_MODULE, matching upstream.
+add_executable(zypp-mcp-solverrequester-tests
+  tests/solver/solverrequester_test.cc
+  src/solver/options.cc
+  src/solver/feedback.cc
+  src/solver/packageargs.cc
+  src/solver/requester.cc
+  src/solver/apply.cc
+)
+target_link_libraries(zypp-mcp-solverrequester-tests PRIVATE ${ZYPP_LIBRARY} Boost::unit_test_framework)
+target_compile_features(zypp-mcp-solverrequester-tests PRIVATE cxx_std_17)
+target_compile_definitions(zypp-mcp-solverrequester-tests PRIVATE
+  BOOST_TEST_DYN_LINK
+  BOOST_TEST_MAIN
+  TESTS_SRC_DIR="${CMAKE_CURRENT_SOURCE_DIR}/tests/solverrequester-data")
+
+add_test(NAME mcp_solverrequester_tests COMMAND zypp-mcp-solverrequester-tests --catch_system_errors=no)
