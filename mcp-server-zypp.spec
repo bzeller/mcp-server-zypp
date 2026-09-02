@@ -55,12 +55,15 @@ tar -x --zstd -f %{SOURCE1} -C proxy/
 # ── Go proxy (mcp-server-zypp) ────────────────────────────────────────────────
 # -mod=vendor:    use proxy/vendor/, no network access required.
 # -buildmode=pie: position-independent executable, required by openSUSE policy.
-# -ldflags "-X":  bake the libexec worker path at link time.
+# -ldflags "-X":  bake the libexec worker DIRECTORY at link time (proxy/
+#                 internal/config/paths.go: DefaultWorkerDir — the proxy scans
+#                 this directory for zypp-mcp-* binaries at startup; it is not
+#                 a path to one specific binary).
 cd %{_builddir}/%{name}-%{version}/proxy
 go build \
     -mod=vendor \
     -buildmode=pie \
-    -ldflags "-X 'github.com/openSUSE/mcp-server-zypp/internal/config.DefaultWorkerPath=%{_libexecdir}/mcp-server-zypp/zypp-mcp-tool'" \
+    -ldflags "-X 'github.com/openSUSE/mcp-server-zypp/internal/config.DefaultWorkerDir=%{_libexecdir}/mcp-server-zypp'" \
     -o mcp-server-zypp \
     ./cmd/mcp-server-zypp
 
