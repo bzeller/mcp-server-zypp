@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.17)
-project(mcp-server-zypp VERSION 0.1.0 LANGUAGES CXX)
+project(mcp-server-zypp VERSION 0.1.2 LANGUAGES CXX)
 
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_CURRENT_SOURCE_DIR}/cmake")
 include(GNUInstallDirs)

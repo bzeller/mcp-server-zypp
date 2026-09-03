@@ -1,4 +1,23 @@
 -------------------------------------------------------------------
+Thu Sep 03 18:39:57 UTC 2026 - Benjamin Zeller <bzeller@suse.de>
+
+- plan_install/plan_remove and confirm_install/confirm_remove now
+  select packages using the same algorithm as zypper (repository
+  priority, vendor, architecture and version), instead of a
+  simplified first-match lookup. A locked package is now reported as
+  a solver conflict instead of having its lock silently cleared;
+  removal no longer pulls in recommended packages; downgrades are now
+  consistently allowed both while solving and during the actual
+  commit.
+- Fixed the packaged proxy binary looking for the worker in the wrong
+  location, causing it to find no tools at all once installed.
+- Added an installable QA testsuite package (mcp-server-zypp-
+  testsuite) that exercises the installed server end to end over the
+  real MCP protocol, covering GPG key trust, license confirmation,
+  solver error reporting and commit failure diagnostics.
+- version 0.1.2
+
+-------------------------------------------------------------------
 Thu Aug 27 14:37:15 UTC 2026 - Benjamin Zeller <bzeller@suse.de>
 
 - Tools are now split into root-gated confirm_install/confirm_remove
@@ -35,6 +54,7 @@ Thu Aug 27 14:37:15 UTC 2026 - Benjamin Zeller <bzeller@suse.de>
   authentication; only the stdio transport is enabled out of the box.
 - Fixed a potential crash when a tool call's JSON arguments were
   malformed or missing an expected field.
+- version 0.1.1
 
 -------------------------------------------------------------------
 Mon Aug 03 12:00:00 UTC 2026 - Benjamin Zeller <bzeller@suse.de>
@@ -42,3 +62,4 @@ Mon Aug 03 12:00:00 UTC 2026 - Benjamin Zeller <bzeller@suse.de>
 - Initial package for mcp-server-zypp, an MCP server exposing
   libzypp package management operations to LLM agents via the
   Model Context Protocol.
+- version 0.1.0

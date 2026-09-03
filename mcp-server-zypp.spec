@@ -15,7 +15,7 @@
 #
 
 Name:           mcp-server-zypp
-Version:        0.1.0
+Version:        0.1.2
 Release:        0
 Summary:        MCP server exposing libzypp package management to LLM agents
 License:        GPL-3.0-or-later
@@ -29,9 +29,10 @@ Source1:        vendor.tar.zst
 BuildRequires:  cmake >= 3.17
 BuildRequires:  gcc-c++
 BuildRequires:  go >= 1.23
-BuildRequires:  libzypp-devel
+BuildRequires:  libzypp-devel >= 17.38.15
 BuildRequires:  yaml-cpp-devel
 BuildRequires:  zstd
+%requires_ge    libzypp
 
 %description
 mcp-server-zypp is an MCP (Model Context Protocol) server that exposes
