@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 """
 Commit-failure diagnostics — confirm_install's structured error/warning
 reporting (CommitFailureLog, worker/src/commitfailurelog.h/.cc and
@@ -13,11 +14,7 @@ rather than relying on defaults, which are distro- and build-dependent:
   ZYPP_SINGLE_RPMTRANS pins the RPM TRANSACTION backend (classic vs.
                        SingleTrans)
 
-They are independent of one another. See
-.opencode/plans/mcp-e2e-commit-diagnostics.md §3 and §3b for the full
-source-verified rationale, including why the preload path additionally
-requires an HTTP-served repo (a dir: repo can never reach it) and why
-real createrepo_c metadata is mandatory rather than a bare RPM directory.
+They are independent of one another.
 
 Cases, in run order — A leaves a clean system; B and C never install
 anything (both delete the package's own RPM out from under a published
@@ -34,12 +31,23 @@ repo to force a download-time failure); D installs successfully:
      McpCommitPreloadReceive::progress() actually fires — something Case
      C's instant 404 miss legitimately never triggers at all (see its
      own comment), so it cannot be asserted there.
+
+progress_sink entries here are MCP-level {"progress", "total", "message"}
+dicts (see lib/mcpclient.py's call_tool() docstring) — the proxy collapses
+the worker's raw "action"/"percent" progress frame fields into a single
+human-readable message string, so every assertion below matches on
+message content instead of an "action" key.
 """
 import json
+import os
+import sys
 from pathlib import Path
 
-from e2e_common import (build_test_rpm, call_tool, fail, publish_rpm_md_repo,
-                         remove_repo, run, served_over_http, step)
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+from lib.fixtures import (build_test_rpm, fail, publish_rpm_md_repo,
+                           remove_repo, run, served_over_http, step)
+from lib.mcpclient import call_tool
 
 RPMBUILD_TOPDIR = Path("/tmp/rpmbuild-commit-failure")
 
@@ -103,9 +111,9 @@ def _case_a_scriptlet_warning(backend: str, single_rpmtrans: str, pkg: str, tag:
              f"{expected_phase!r} whose text contains \"scriptlet failed, \". "
              f"Got: {warnings}")
 
-    if not any(f.get("action") == "install" for f in frames):
-        fail(f"Case A ({backend}): expected at least one progress frame with "
-             f"action == \"install\"")
+    if not any(f["message"].startswith("install") for f in frames):
+        fail(f"Case A ({backend}): expected at least one progress notification "
+             f"whose message starts with \"install\"")
 
     # SingleTrans additionally records a CommitPhase::Script warning from
     # McpCommitScriptSAReceive::finish() (callbacks.cc:953-958), whose text
@@ -121,7 +129,7 @@ def _case_a_scriptlet_warning(backend: str, single_rpmtrans: str, pkg: str, tag:
     # under test. Report it instead, so the log records which backend really
     # ran. See the plan doc §3b, point 3.
     script_warnings = [w for w in warnings if w.get("phase") == "script"]
-    script_frames = [f for f in frames if f.get("action") == "script"]
+    script_frames = [f for f in frames if "script" in f["message"]]
     print(f"[{backend}] script-phase warnings: {len(script_warnings)}, "
           f"script progress frames: {len(script_frames)} "
           f"(informational — indicates whether SingleTrans actually engaged)")
@@ -234,9 +242,9 @@ def _case_c_preload_failure():
                      f"phase == \"preload\" (exact — pinned via ZYPP_PCK_PRELOAD=1), "
                      f"got: {details}")
 
-            if not any(f.get("action") == "preload" for f in frames):
-                fail("Case C: expected at least one progress frame with "
-                     "action == \"preload\"")
+            if not any(f["message"].startswith("preload") for f in frames):
+                fail("Case C: expected at least one progress notification "
+                     "whose message starts with \"preload\"")
         finally:
             # Mandatory, not just tidy: preload-test-repo points at an
             # HTTP server that is about to be torn down when this `with`
@@ -267,9 +275,12 @@ def _case_d_preload_progress_engaged():
     throttle — see reportBytesDownloaded()), so this is a deterministic
     guarantee, not a timing gamble.
 
-    Only occurrence is asserted here (did progress() fire at all) — the
-    exact bytes_received/bytes_required key-name mapping this depends on
-    is covered deterministically, against a synthetic UserData, by
+    Only occurrence is asserted here (did progress() fire at all, with a
+    meaningful non-zero total — the proxy reports total=0 for frames with
+    no percent applicable at all, see progressMessage() in
+    proxy/internal/tools/tools.go) — the exact bytes_received/
+    bytes_required key-name mapping this depends on is covered
+    deterministically, against a synthetic UserData, by
     worker/tests/preloadprogress_test.cc instead.
     """
     step("Case D: successful preload download -> progress() actually fires")
@@ -300,9 +311,11 @@ def _case_d_preload_progress_engaged():
                 fail(f"Case D: expected a successful result frame, got {result}")
             run(["rpm", "-q", "preload-progress-pkg"])
 
-            if not any(f.get("action") == "preload" and "percent" in f for f in frames):
-                fail(f"Case D: expected at least one preload progress frame "
-                     f"with a \"percent\" key (i.e. progress() fired), got "
+            if not any(f["message"].startswith("preload") and f["total"] > 0
+                       for f in frames):
+                fail(f"Case D: expected at least one preload progress "
+                     f"notification with a non-zero total (i.e. "
+                     f"progress() fired with real byte counters), got "
                      f"frames: {frames}")
         finally:
             remove_repo("preload-progress-repo")
@@ -316,3 +329,7 @@ def run_scenario():
     _case_b_classic_download_failure()
     _case_c_preload_failure()
     _case_d_preload_progress_engaged()
+
+
+if __name__ == "__main__":
+    run_scenario()

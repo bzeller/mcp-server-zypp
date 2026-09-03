@@ -1,0 +1,118 @@
+#!/usr/bin/python3
+"""
+Discovery-based runner for every scenario under tests/testsuite/ — ports
+container_test.py's behaviour (proven: it caught the repo-leak bug where
+commit_failure poisoned gpg_key and license) to the new one-executable-
+per-scenario-directory layout, matching the mcp-server-snapper reference's
+`for test in ...; do "./$test"; done` idiom instead of Python's import
+machinery.
+
+Scenarios are discovered by directory listing, not a hardcoded list —
+the reference duplicates its scenario list across README, %check and
+openQA, and those copies have already drifted (%check runs one test
+while the README lists eight); a second hardcoded list here would just
+be a third place to forget to update.
+
+Installed to %{_prefix}/lib/mcp-server-zypp/testsuite/run-testsuite
+alongside every scenario directory; also runnable directly from a
+from-source checkout (see tests/run-in-container.py) or against an
+already-built tree (MCPSERVER/MCPSERVER_ARGS, see module docstring in
+lib/mcpclient.py).
+"""
+import argparse
+import os
+import subprocess
+import sys
+from pathlib import Path
+
+TESTSUITE_DIR = Path(__file__).resolve().parent
+
+
+def step(msg):
+    print(f"\n=== {msg} ===")
+
+
+def discover_scenarios():
+    """Every directory directly under here containing an executable of
+    the same name — lib/ is deliberately not a scenario (no lib/lib),
+    and any future non-scenario directory is skipped the same way rather
+    than needing an exclude list."""
+    scenarios = []
+    for entry in sorted(TESTSUITE_DIR.iterdir()):
+        if not entry.is_dir():
+            continue
+        candidate = entry / entry.name
+        if candidate.is_file() and os.access(candidate, os.X_OK):
+            scenarios.append(entry.name)
+    return scenarios
+
+
+def main():
+    # Force line-buffered stdout regardless of whether it's a TTY. Without
+    # this, redirecting to a file (or a log-capturing harness like openQA)
+    # switches Python to full block buffering — this process's own step()/
+    # print() calls then sit in an internal buffer while every subprocess
+    # spawned below (which inherits our stdout fd directly and writes to
+    # it immediately, bypassing our buffer entirely) appears in the
+    # output BEFORE the step marker that was printed first. Confirmed via
+    # a real `run-in-container.py > file.txt` capture: every scenario's
+    # own output preceded its "=== Scenario: X ===" marker.
+    sys.stdout.reconfigure(line_buffering=True)
+
+    ap = argparse.ArgumentParser(description=__doc__,
+                                  formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("scenario", nargs="?",
+                     help="Run only this one scenario (by directory name), "
+                          "e.g. when re-running a single openQA failure.")
+    args = ap.parse_args()
+
+    # Destructive guard: these scenarios install and remove real packages
+    # on whatever system this runs on. Both the openQA module and
+    # run-in-container.py set this explicitly; nothing else should be
+    # able to trigger it by accident.
+    if os.environ.get("MCP_TESTSUITE_DESTRUCTIVE") != "1":
+        sys.exit(
+            "FAIL: refusing to run — this testsuite installs and removes "
+            "real packages. Set MCP_TESTSUITE_DESTRUCTIVE=1 to opt in "
+            "(only ever do this in a disposable VM or container)."
+        )
+
+    all_scenarios = discover_scenarios()
+    if not all_scenarios:
+        sys.exit(f"FAIL: no scenarios found under {TESTSUITE_DIR}")
+
+    if args.scenario is not None:
+        if args.scenario not in all_scenarios:
+            sys.exit(f"FAIL: unknown scenario {args.scenario!r}. "
+                      f"Known: {', '.join(all_scenarios)}")
+        to_run = [args.scenario]
+    else:
+        to_run = all_scenarios
+
+    results = {}
+    for name in to_run:
+        step(f"Scenario: {name}")
+        binary = TESTSUITE_DIR / name / name
+        try:
+            proc = subprocess.run([str(binary)])
+            results[name] = proc.returncode == 0
+        except KeyboardInterrupt:
+            raise
+        except BaseException as e:
+            # Mirrors container_test.py: one scenario's own failure to
+            # even start (missing interpreter, permissions, ...) must not
+            # prevent the remaining scenarios from running and reporting.
+            print(f"SCENARIO '{name}' FAILED TO RUN: {e}", file=sys.stderr)
+            results[name] = False
+
+    step("Summary")
+    for name, ok in results.items():
+        print(f"{'PASS' if ok else 'FAIL'}: {name}")
+
+    if not all(results.values()):
+        sys.exit(1)
+    print("\nALL PASS")
+
+
+if __name__ == "__main__":
+    main()

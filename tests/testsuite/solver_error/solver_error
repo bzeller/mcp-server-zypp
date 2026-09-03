@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 """
 Solver problem detail — plan_install's SOLVER_ERROR response should carry
 each problem's full detail text and its proposed solutions, not just a
@@ -9,9 +10,14 @@ Solve-only, no commit — the fastest scenario in the suite and independent
 of everything else here.
 """
 import json
+import os
+import sys
 from pathlib import Path
 
-from e2e_common import build_test_rpm, call_tool, fail, publish_rpm_md_repo, step
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+from lib.fixtures import build_test_rpm, fail, publish_rpm_md_repo, step
+from lib.mcpclient import call_tool
 
 RPMBUILD_TOPDIR = Path("/tmp/rpmbuild-solver-error")
 REPO_DIR = Path("/repo-solver-error")
@@ -57,3 +63,7 @@ def run_scenario():
              f"array (each with a description), got: {problems}")
 
     print("PASS: SOLVER_ERROR includes problem detail and solutions")
+
+
+if __name__ == "__main__":
+    run_scenario()

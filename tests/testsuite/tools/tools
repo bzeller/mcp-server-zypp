@@ -1,0 +1,96 @@
+#!/usr/bin/python3
+"""
+Tool registration — connect over real MCP, tools/list, assert exactly the
+expected set. No root required for this scenario itself (registration
+still filters by the *server process's* uid, not the client's — see
+below), no repos, no rpmdb.
+
+This is the scenario that catches the original F01 bug (the proxy's
+DefaultWorkerDir was bound to the wrong linker symbol, so an installed
+proxy found no worker binaries and registered zero tools) — and the only
+kind of test that can, since that bug lives specifically in the baked-in
+path of an *installed* binary, not anything ctest's CMake-built proxy
+ever exercises. Run this scenario first: if it fails, nothing else in
+this suite will pass either, and their failures would just be noise.
+
+Invoked directly as an executable (./tools/tools), like every other
+scenario in this suite — not imported as a module. sys.path is extended
+below so `lib/` is importable regardless of the caller's cwd.
+"""
+import os
+import sys
+
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
+
+from lib.mcpclient import _server_command
+
+
+ALWAYS_AVAILABLE = {
+    "search_packages",
+    "find_providers",
+    "find_dependents",
+    "check_updates",
+    "plan_install",
+    "plan_remove",
+}
+ROOT_ONLY = {
+    "confirm_install",
+    "confirm_remove",
+}
+
+
+def run_scenario():
+    import anyio
+    from mcp import ClientSession
+    from mcp.client.stdio import StdioServerParameters, stdio_client
+
+    server, extra_args = _server_command()
+    env = os.environ.copy()
+
+    async def _list():
+        params = StdioServerParameters(command=server, args=extra_args, env=env)
+        async with stdio_client(params) as (read, write):
+            async with ClientSession(read, write) as session:
+                await session.initialize()
+                result = await session.list_tools()
+                return {t.name for t in result.tools}
+
+    names = anyio.run(_list)
+    print(f"tools/list returned: {sorted(names)}")
+
+    if not names:
+        sys.exit(
+            "FAIL: tools/list returned no tools at all. If this is an "
+            "installed package, check that the proxy's baked-in worker "
+            "directory actually points at %{_libexecdir}/mcp-server-zypp "
+            "(see mcp-server-zypp.spec's -ldflags -X for DefaultWorkerDir)."
+        )
+
+    missing_always = ALWAYS_AVAILABLE - names
+    if missing_always:
+        sys.exit(f"FAIL: missing always-available tools: {sorted(missing_always)}")
+
+    unexpected = names - ALWAYS_AVAILABLE - ROOT_ONLY
+    if unexpected:
+        sys.exit(f"FAIL: unexpected tool(s) registered: {sorted(unexpected)}")
+
+    # ROOT_ONLY tools are only registered when the *server process* runs as
+    # root (proxy/internal/tools/tools.go: Register()'s uid check happens
+    # once, at startup, not per MCP client) — assert whichever state we
+    # actually observe is self-consistent, rather than hardcoding one.
+    have_root_tools = ROOT_ONLY <= names
+    have_any_root_tools = bool(ROOT_ONLY & names)
+    if have_any_root_tools and not have_root_tools:
+        sys.exit(f"FAIL: only some root-only tools registered: "
+                  f"{sorted(ROOT_ONLY & names)} (expected all or none)")
+
+    if have_root_tools:
+        print("PASS: all 8 tools registered (server running as root)")
+    else:
+        print("PASS: 6 non-root tools registered "
+              "(server not running as root — confirm_install/confirm_remove "
+              "correctly absent)")
+
+
+if __name__ == "__main__":
+    run_scenario()

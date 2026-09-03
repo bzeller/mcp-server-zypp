@@ -1,3 +1,4 @@
+#!/usr/bin/python3
 """
 License confirmation gate — confirm_install's accepted_licenses argument
 (unlike GPG keys, this really is a plain tool argument, not elicitation —
@@ -20,15 +21,20 @@ regeneration involved):
 
 The package is left completely unsigned and gpgcheck disabled — this
 scenario is deliberately independent of GPG key handling (see
-scenarios/gpg_key.py for that).
+../gpg_key/gpg_key for that).
 """
 import hashlib
 import json
+import os
+import sys
 from pathlib import Path
 
-from e2e_common import E2E_DIR, call_tool, fail, run, step
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-SPEC = E2E_DIR / "license-test-package.spec"
+from lib.fixtures import LIB_DIR, fail, run, step
+from lib.mcpclient import call_tool
+
+SPEC = LIB_DIR / "license-test-package.spec"
 RPMBUILD_TOPDIR = Path("/tmp/rpmbuild-license")
 REPO_DIR = Path("/repo-license")
 DESCR_DIR = REPO_DIR / "suse" / "setup" / "descr"
@@ -194,3 +200,7 @@ def run_scenario():
         fail(f"expected a result frame (no license gate), got {result}")
     run(["rpm", "-q", f"{UPGRADE_PKG}-2.0"])
     print("PASS: identical-license upgrade proceeded without re-confirmation")
+
+
+if __name__ == "__main__":
+    run_scenario()

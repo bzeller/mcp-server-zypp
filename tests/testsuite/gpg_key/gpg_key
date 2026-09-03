@@ -1,23 +1,28 @@
+#!/usr/bin/python3
 """
 GPG key trust handling — confirm_install's key trust decisions go through
 MCP elicitation only, there is no tool argument that can pre-approve a key
 (see worker/src/gpgkeygate.h). Verifies that end to end against a real
-signed RPM and a real, never-imported GPG key:
+signed RPM and a real, never-imported GPG key, driven over the real MCP
+protocol (proxy + worker), not the worker directly:
 
-  1. No answer at all for the key-trust elicitation (stdin closed) — this
-     is what a client without elicitation support looks like from the
-     worker's point of view (the proxy maps that case to "decline", the
-     worker maps EOF to the same outcome) — must deny and report
+  1. No answer at all for the key-trust elicitation — what a client
+     without elicitation support looks like; must deny and report
      KEY_NOT_TRUSTED with the correct fingerprint.
   2. An explicit "decline" answer — same expected outcome.
   3. An explicit "accept" answer — must actually install the package.
 """
 import json
+import os
+import sys
 from pathlib import Path
 
-from e2e_common import E2E_DIR, call_tool, fail, run, step
+sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 
-SPEC = E2E_DIR / "test-package.spec"
+from lib.fixtures import LIB_DIR, fail, run, step
+from lib.mcpclient import call_tool
+
+SPEC = LIB_DIR / "test-package.spec"
 GNUPGHOME = Path("/tmp/gpg-e2e")
 RPMBUILD_TOPDIR = Path("/tmp/rpmbuild-gpg-key")
 REPO_DIR = Path("/repo-gpg-key")
@@ -127,3 +132,7 @@ def run_scenario():
         fail(f"expected a result frame, got {result}")
     run(["rpm", "-q", pkg_name])  # raises if not installed
     print("PASS: accepted and installed")
+
+
+if __name__ == "__main__":
+    run_scenario()

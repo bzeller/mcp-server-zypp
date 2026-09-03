@@ -41,6 +41,24 @@ It consists of two components:
 - mcp-server-zypp: the Go MCP proxy, speaks the MCP protocol over stdio
 - zypp-mcp-tool:   the C++ worker, spawned per tool call, links against libzypp
 
+%package testsuite
+Summary:        Testsuite for package %{name}
+Requires:       %{name} = %{version}-%{release}
+Requires:       python3-mcp
+Requires:       rpm-build
+Requires:       createrepo_c
+Requires:       gpg2
+Requires:       zypper
+BuildArch:      noarch
+
+%description testsuite
+Testsuite for package %{name}
+
+Note: This package is for testing purposes only. It is intended for
+use by quality assurance and requires a dedicated testing environment.
+
+Do not install on a production system!
+
 %prep
 %autosetup -p1
 # Unpack vendor tarball into proxy/ where go.mod lives
@@ -74,6 +92,14 @@ go build \
 # Go proxy — cmake did not build it, install manually
 install -D -m 0755 proxy/mcp-server-zypp %{buildroot}%{_bindir}/mcp-server-zypp
 
+# Testsuite (mcp-server-zypp-testsuite subpackage) — real MCP-over-stdio
+# scenarios run against an installed proxy+worker over the actual MCP
+# protocol. Not %%{_bindir}: destructive QA artifacts, not user commands
+# (see tests/testsuite/run-testsuite's own docstring). cp -a preserves
+# each scenario's executable bit, set at commit time.
+mkdir -p %{buildroot}%{_prefix}/lib/mcp-server-zypp/testsuite
+cp -a tests/testsuite/. %{buildroot}%{_prefix}/lib/mcp-server-zypp/testsuite/
+
 %check
 # Integration tests run zypp-mcp-tool against synthetic solver testcases —
 # no live system, no root, no network. Mirrors proxy/CMakeLists.txt's
@@ -90,5 +116,8 @@ sh -c 'cd proxy && go test -mod=vendor -v ./tests/...'
 %{_bindir}/mcp-server-zypp
 %dir %{_libexecdir}/mcp-server-zypp
 %{_libexecdir}/mcp-server-zypp/zypp-mcp-tool
+
+%files testsuite
+%{_prefix}/lib/mcp-server-zypp/
 
 %changelog
